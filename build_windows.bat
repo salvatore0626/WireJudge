@@ -3,7 +3,6 @@ setlocal
 cd /d "%~dp0"
 
 echo Building portable Wire Judge for Windows...
-echo Python 3.11 or newer must be installed on this build computer.
 
 py -3 -m venv .build-venv
 if errorlevel 1 goto failed
