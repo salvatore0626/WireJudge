@@ -19,8 +19,7 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 
 echo.
-echo Done! Share dist\Wire_Judge.exe with your users.
-echo They do not need Python or any extra libraries installed.
+echo Done! Your exe is in dist\Wire_Judge.exe
 pause
 exit /b 0
 
