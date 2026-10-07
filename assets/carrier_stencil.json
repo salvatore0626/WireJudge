@@ -1,0 +1,106 @@
+{
+  "description": "Approximate carrier silhouette based on user sketch; scale and carrier origin remain estimates. Runway follows live Carrier Config.",
+  "units": "metres",
+  "deck_vertices_xz": [
+    [
+      0.5,
+      -90.0
+    ],
+    [
+      30.5,
+      -86.117
+    ],
+    [
+      29.0,
+      -79.323
+    ],
+    [
+      41.5,
+      -77.867
+    ],
+    [
+      41.5,
+      -58.94
+    ],
+    [
+      47.5,
+      -51.175
+    ],
+    [
+      47.5,
+      161.392
+    ],
+    [
+      27.0,
+      203.614
+    ],
+    [
+      18.5,
+      289.515
+    ],
+    [
+      -14.0,
+      289.515
+    ],
+    [
+      -23.0,
+      200.217
+    ],
+    [
+      -47.0,
+      172.554
+    ],
+    [
+      -46.0,
+      -49.719
+    ],
+    [
+      -37.5,
+      -52.146
+    ],
+    [
+      -37.5,
+      -73.985
+    ],
+    [
+      0.0,
+      -86.117
+    ]
+  ],
+  "island_vertices_xz": [
+    [
+      47.5,
+      -8.467
+    ],
+    [
+      23.0,
+      -8.467
+    ],
+    [
+      23.0,
+      23.078
+    ],
+    [
+      47.5,
+      23.078
+    ]
+  ],
+  "runway_width_m": 32,
+  "runway_aft_m": 35,
+  "runway_forward_m": 245,
+  "deck_length_m": 380,
+  "deck_width_m": 95,
+  "stern_aft_m": 90,
+  "lateral_center_m": 0,
+  "island_circle_xz": [
+    36.5,
+    8.033
+  ],
+  "island_circle_radius_m": 6.5,
+  "deck_markings": {
+    "runway_border_width_m": 2.5,
+    "runway_block_spacing_m": 18,
+    "runway_block_length_m": 4
+  },
+  "runway_visual_lateral_offset_m": 0
+}
