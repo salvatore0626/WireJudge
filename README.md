@@ -4,20 +4,16 @@ The replay files are located in `%APPDATA%\Boundless Dynamics, LLC\VTOLVR\SaveDa
 
 Wire Judge opens a VTOL VR `.vtr` replay and displays each player's approach to the carrier.
 
-## Start on macOS or Windows
+## Start Windows or Mac
 
-Python 3.11 or newer. Open a terminal in the project folder.
+**Windows .Exe (recommended)**
 
-Mac terminal:
+Run build_windows.bat to create a portable .exe
 
-```sh
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python app.py
-```
 
-Windows PowerShell:
+otherwise to run it in PowerShell or terminal you will need Python 3.11 or newer. Open a powershell/terminal in the project folder.
+
+**Windows PowerShell:**
 
 ```powershell
 py -m venv .venv
@@ -26,6 +22,16 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
+
+
+**Mac terminal:**
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python app.py
+```
 ## Build a portable Windows EXE
 
 On a Windows computer with Python 3.11 or newer installed, double-click **build_windows.bat**. The first build needs internet access to download dependencies.
