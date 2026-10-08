@@ -1,4 +1,4 @@
-# Wire Judge — version 0.12.27
+# Wire Judge — version 1.1
 
 The replay files are located in `%APPDATA%\Boundless Dynamics, LLC\VTOLVR\SaveData\Replays` on Windows.
 
