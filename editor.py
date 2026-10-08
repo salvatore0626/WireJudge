@@ -5,18 +5,20 @@ from tkinter import ttk,messagebox
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle,Polygon
+from matplotlib.colors import to_rgba
 from matplotlib.ticker import FuncFormatter,MaxNLocator
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from toolbar import DeferredFigureCanvasTkAgg
+from scoring import score_attempt
 from engine import full_track,attempt_from_range,player_label,clock,glide_origin_msl_ft,glide_start_nm,approach_reference
-from plots import BG,PANEL,TEXT,MUTED,BLUE,GREEN
-from carrier_stencil import draw_carrier_stencil
+from plots import BG,PANEL,TEXT,MUTED,BLUE,GREEN,START_END_COLOR
+from carrier_stencil import draw_carrier_stencil,stencil_geometry
 
 ORANGE='#f5a65b'
 CURSOR='#ff8c8c'
 
 def draw_localizer_reference(ax,settings,origin_msl_ft):
     """Render-distance localizer with grading gates in carrier-local coordinates."""
-    distance=settings.case3_graph_range_nm if settings.recovery_case==3 else settings.graph_range_nm
+    distance=10 if settings.recovery_case==3 else settings.graph_range_nm
     angle=np.radians(settings.runway_deg)
     origin=np.array([settings.offset_x,settings.offset_z])/1852
     aft=np.array([-np.sin(angle),-np.cos(angle)])
@@ -24,10 +26,48 @@ def draw_localizer_reference(ax,settings,origin_msl_ft):
     center=origin+aft*distance
     half_width=np.tan(np.radians(settings.localizer_tolerance_deg))*distance
     vertices=[origin,center-right*half_width,center+right*half_width]
-    triangle=Polygon(vertices,closed=True,facecolor=(.424,.851,.686,.10),
-                     edgecolor=GREEN,lw=1.3,zorder=.5,label='Localizer envelope')
+    triangle=Polygon(vertices,closed=True,facecolor=to_rgba(GREEN,settings.limit_shading_opacity),
+                     edgecolor=to_rgba(GREEN,settings.limit_outline_opacity),lw=1.3,zorder=.5,label='Localizer envelope')
     triangle.set_gid('localizer-envelope');ax.add_patch(triangle)
-    ax.plot([origin[0],center[0]],[origin[1],center[1]],color=GREEN,lw=1.1,ls='--',zorder=3)
+    ax.plot([origin[0],center[0]],[origin[1],center[1]],color=GREEN,alpha=settings.limit_center_opacity,lw=1.1,ls='--',zorder=3)
+    if settings.recovery_case==3:
+        along=float(np.dot(origin,aft))
+        holding=origin+aft*(-along+np.sqrt(along**2+21**2-float(np.dot(origin,origin))))
+        marker=ax.scatter([holding[0]],[holding[1]],marker='^',s=100,color=START_END_COLOR,alpha=settings.replay_procedure_opacity,zorder=10)
+        marker.set_gid('case3-marshal-21dme')
+        ax.annotate('IAF',holding,xytext=(8,8),textcoords='offset points',color=START_END_COLOR,
+                    alpha=settings.replay_procedure_opacity,fontsize=9,in_layout=False)
+        forward=-aft
+        projection=float(np.dot(origin,forward))
+        outbound=-projection+np.sqrt(projection**2+4**2-float(np.dot(origin,origin)))
+        turn_start=origin+forward*outbound
+        radius=.75;turn_center=turn_start-right*radius
+        phase=np.linspace(0,np.pi,121)
+        turn=turn_center+radius*(np.cos(phase)[:,None]*right+np.sin(phase)[:,None]*forward)
+        path=np.vstack((origin,turn,turn[-1]+aft*2.5))
+        missed,=ax.plot(path[:,0],path[:,1],color=START_END_COLOR,
+                        alpha=settings.replay_procedure_opacity,lw=1.3,ls='--',zorder=.45)
+        missed.set_gid('case3-missed-approach')
+        label_anchor=(float(np.max(turn[:,0])),float(np.max(turn[:,1])))
+        label=ax.annotate('Missed Approach',label_anchor,xytext=(8,8),textcoords='offset points',
+                          ha='left',va='bottom',color=START_END_COLOR,
+                          alpha=settings.replay_procedure_opacity,fontsize=9,in_layout=False)
+        label.set_gid('case3-missed-approach-label')
+        arrow=ax.annotate('',xy=path[-1],xytext=path[-1]-aft*.18,
+                          arrowprops=dict(arrowstyle='-|>',color=START_END_COLOR,
+                                          alpha=settings.replay_procedure_opacity,lw=1.3,mutation_scale=12),
+                          zorder=.45,in_layout=False)
+        arrow.set_gid('case3-missed-approach-arrow')
+    else:
+        geometry=stencil_geometry()
+        starboard=max(point[0] for point in geometry['deck_vertices_xz'])*geometry['deck_width_m']/95+geometry['lateral_center_m']
+        right_edge=(starboard+800*.3048)/1852
+        marshal=Circle((right_edge-3,0),3,fill=False,edgecolor=START_END_COLOR,
+                       alpha=settings.replay_procedure_opacity,lw=1.3,zorder=.4)
+        marshal.set_gid('case1-marshal');ax.add_patch(marshal)
+        ax.annotate('Marshal Stack',(right_edge-3,3),xytext=(0,8),textcoords='offset points',
+                    ha='center',va='bottom',color=START_END_COLOR,alpha=settings.replay_procedure_opacity,
+                    fontsize=9,in_layout=False)
     gates=[(glide_start_nm(settings,origin_msl_ft),'Glide Start'),(settings.scoring_changeover_nm,'Glide End')]
     if settings.recovery_case==3:
         gates.extend(((settings.case3_platform_start_nm,'Platform Start'),(settings.case3_platform_end_nm,'Platform End')))
@@ -35,7 +75,7 @@ def draw_localizer_reference(ax,settings,origin_msl_ft):
         if nm is None or not 0<nm<=distance:continue
         mid=origin+aft*nm;span=right*np.tan(np.radians(settings.localizer_tolerance_deg))*nm
         line,=ax.plot([mid[0]-span[0],mid[0]+span[0]],[mid[1]-span[1],mid[1]+span[1]],
-                     color='#c4a1ff',lw=1.2,ls='--',zorder=4,label=label)
+                     color=START_END_COLOR,alpha=settings.start_end_opacity,lw=1.2,ls='--',zorder=4,label=label)
         line.set_gid('map-'+label.lower().replace(' ','-'))
 
 
@@ -56,13 +96,14 @@ class PlayerEditor(ttk.Frame):
             ttk.Label(self,text='No usable motion samples for this player and carrier.',padding=16).pack(anchor='w');return
         self.track_ids=sorted(self.data,key=lambda key:self.data[key]['time'][0]);self.track_id=self.track_ids[0]
         self.map_radius=2.0;self.map_center=np.array([0.,0.]);self.map_drag=None;self.timeline_drag=None
+        self.show_full_trails=True
         self.interpolated=tk.BooleanVar(value=True)
         self.flight_visible={entity:tk.BooleanVar(value=True) for entity in self.track_ids}
         self.visible_track_ids=list(self.track_ids)
         footer=ttk.Frame(self,padding=16);footer.pack(side='bottom',fill='x')
         self.notice=tk.StringVar(value='Map: drag to pan, wheel to zoom. Timeline: drag to pan, click to set cursor; drag Start/Stop to trim.')
-        ttk.Button(footer,text='Reset changes',style='NeedsInput.TButton',command=self.close).pack(side='right')
-        self.save_btn=ttk.Button(footer,text='Save & apply',command=self.save);self.save_btn.pack(side='right',padx=8)
+        self.reset_btn=ttk.Button(footer,text='Reset Changes',command=self.close);self.reset_btn.pack(side='right')
+        self.save_btn=ttk.Button(footer,text='Save & Apply',command=self.save);self.save_btn.pack(side='right',padx=8)
         body=ttk.Panedwindow(self,orient='horizontal');body.pack(fill='both',expand=True,padx=16,pady=6)
         left=ttk.Frame(body,padding=(0,0,12,0));right=ttk.Frame(body);body.add(left,weight=1);body.add(right,weight=4)
         ttk.Label(left,text='ATTEMPTS',font=('Helvetica',11,'bold')).pack(anchor='w',pady=(0,8))
@@ -94,15 +135,16 @@ class PlayerEditor(ttk.Frame):
         for label,command in (('-',lambda:self.zoom_timeline(2)),('+',lambda:self.zoom_timeline(.5)),
                               ('Center on cursor',self.center_timeline),('Focus attempt',self.focus_attempt),('Full timeline',self.full_timeline)):
             ttk.Button(centered,text=label,width=3 if label in ('-','+') else None,command=command).pack(side='left',padx=2)
-        self.fig=Figure(figsize=(9,8),dpi=100,facecolor=BG,layout='constrained')
-        self.canvas=FigureCanvasTkAgg(self.fig,master=right);self.canvas.get_tk_widget().pack(fill='both',expand=True)
-        self.canvas.get_tk_widget().bind('<Configure>',lambda _:self.after_idle(self.resize),add='+')
+        self.fig=Figure(figsize=(9,8),dpi=100,facecolor=BG)
+        self.canvas=DeferredFigureCanvasTkAgg(self.fig,master=right);self.canvas.get_tk_widget().pack(fill='both',expand=True)
         self.canvas.mpl_connect('button_press_event',self.press)
         self.canvas.mpl_connect('motion_notify_event',self.motion)
         self.canvas.mpl_connect('button_release_event',self.release)
         self.canvas.mpl_connect('scroll_event',self.scroll)
+        self.canvas.mpl_connect('resize_event',lambda event:self.update_figure_layout())
         ttk.Style(self).configure('Small.TButton',padding=(5,3),font=('Helvetica',9))
         self.home_btn=ttk.Button(self.canvas.get_tk_widget(),text='Home',width=5,style='Small.TButton',command=self.home_map)
+        self.map_trails_btn=ttk.Button(self.canvas.get_tk_widget(),text='Hide',width=5,style='Small.TButton',command=self.toggle_map_trails)
         self.map_zoom_out_btn=ttk.Button(self.canvas.get_tk_widget(),text='-',width=2,style='Small.TButton',command=lambda:self.zoom_map(2))
         self.map_zoom_in_btn=ttk.Button(self.canvas.get_tk_widget(),text='+',width=2,style='Small.TButton',command=lambda:self.zoom_map(.5))
         self.canvas.mpl_connect('draw_event',self.place_home)
@@ -111,17 +153,40 @@ class PlayerEditor(ttk.Frame):
         else:self.cursor=float(self.data[self.track_id]['time'][0]);self.draw()
 
     def resize(self):
-        widget=self.canvas.get_tk_widget();w,h=widget.winfo_width(),widget.winfo_height()
-        if w>1 and h>1:self.fig.set_size_inches(w/self.fig.dpi,h/self.fig.dpi,forward=False);self.canvas.draw_idle()
+        self.canvas.request_resize()
+
+    def update_figure_layout(self):
+        """Reserve stable pixel margins; tick labels must not move the map edges."""
+        width,height=self.fig.get_size_inches()*self.fig.dpi
+        left=min(96,width*.3);right=min(40,width*.15)
+        top=min(20,height*.08);bottom=min(58,height*.2);gap=min(62,height*.2)
+        self.fig.subplots_adjust(left=left/width,right=1-right/width,
+                                 bottom=bottom/height,top=1-top/height,
+                                 hspace=2*gap/max(height-top-bottom-gap,1))
+
+    def toggle_map_trails(self):
+        self.show_full_trails=not self.show_full_trails
+        self.map_trails_btn.configure(text='Hide' if self.show_full_trails else 'Show')
+        self.draw()
 
     def current(self):
         return next((a for a in self.working if a.edit_id==self.selected_id),None)
 
     def populate(self):
         self.tree.delete(*self.tree.get_children())
+        self.tree.tag_configure('provisional',foreground='#ffce76')
+        origin=glide_origin_msl_ft(self.app.carrier,self.app.settings)
         for i,a in enumerate(sorted(self.working,key=lambda a:a.start)):
-            self.tree.insert('','end',iid=a.edit_id,text=f'{i+1} · {a.aircraft}',values=(clock(a.start),clock(a.end)))
+            score=score_attempt(a,self.app.get_wire(a),self.app.settings,origin)
+            self.tree.insert('','end',iid=a.edit_id,text=f'{i+1} · {a.aircraft}',values=(clock(a.start),clock(a.end)),tags=('provisional',) if not score.complete else ())
         if self.selected_id and self.tree.exists(self.selected_id):self.tree.selection_set(self.selected_id)
+
+    def refresh_highlights(self):
+        origin=glide_origin_msl_ft(self.app.carrier,self.app.settings)
+        for a in self.working:
+            if self.tree.exists(a.edit_id):
+                score=score_attempt(a,self.app.get_wire(a),self.app.settings,origin)
+                self.tree.item(a.edit_id,tags=('provisional',) if not score.complete else ())
 
     def select_attempt(self,*_):
         choices=self.tree.selection()
@@ -214,6 +279,7 @@ class PlayerEditor(ttk.Frame):
     def draw(self):
         self.update_flight_menu()
         self.fig.clear();grid=self.fig.add_gridspec(2,1,height_ratios=(1,3.1))
+        self.update_figure_layout()
         self.timeline=self.fig.add_subplot(grid[0]);self.map=self.fig.add_subplot(grid[1])
         for ax in (self.timeline,self.map):
             ax.set_facecolor(PANEL);ax.tick_params(colors=MUTED,labelsize=9)
@@ -227,16 +293,17 @@ class PlayerEditor(ttk.Frame):
             line,=self.timeline.plot([t[0],t[-1]],[lane,lane],color=color,lw=5,alpha=.6)
             line.set_gid(f'flight-{entity}-timeline')
             self.timeline.scatter(t,np.full(len(t),lane),s=5,color=color,alpha=.7)
-            sample=np.linspace(t[0],t[-1],min(10000,max(2,int(t[-1]-t[0])+1)))
-            line,=self.map.plot(np.interp(sample,t,data['map_x']),np.interp(sample,t,data['map_y']),color=color,lw=.9,alpha=.6,marker='.',markersize=2.5)
-            line.set_gid(f'flight-{entity}-map')
+            if self.show_full_trails:
+                sample=np.linspace(t[0],t[-1],min(10000,max(2,int(t[-1]-t[0])+1)))
+                line,=self.map.plot(np.interp(sample,t,data['map_x']),np.interp(sample,t,data['map_y']),color=color,lw=.9,alpha=.6,marker='.',markersize=2.5)
+                line.set_gid(f'flight-{entity}-map')
         for attempt in sorted(self.working,key=lambda item:item.edit_id==self.selected_id):
             if attempt.entity_id not in self.visible_track_ids:continue
             lane=self.visible_track_ids.index(attempt.entity_id);chosen=attempt.edit_id==self.selected_id
             color=GREEN if chosen else ORANGE
             line,=self.timeline.plot([attempt.start,attempt.end],[lane,lane],color=color,lw=10,alpha=.85,solid_capstyle='butt',zorder=5 if chosen else 4)
             line.set_gid('attempt-'+attempt.edit_id+'-timeline')
-            if not chosen:continue
+            if not chosen and self.show_full_trails:continue
             data=self.data[attempt.entity_id];t=data['time']
             sample=np.linspace(attempt.start,attempt.end,min(10000,max(2,int(attempt.end-attempt.start)+1)))
             line,=self.map.plot(np.interp(sample,t,data['map_x']),np.interp(sample,t,data['map_y']),color=color,lw=2.2,zorder=6 if chosen else 5,marker='.',markersize=3)
@@ -244,10 +311,10 @@ class PlayerEditor(ttk.Frame):
         a=self.current()
         if a and a.entity_id in self.visible_track_ids:
             for value,label in ((a.start,'Start'),(a.end,'Stop')):
-                self.timeline.axvline(value,color=GREEN,lw=1.5)
+                self.timeline.axvline(value,color=GREEN,alpha=self.app.settings.start_end_opacity,lw=1.5)
                 low,high=self.timeline_limits()
                 if low<=value<=high:
-                    self.timeline.text(value,.96,label,transform=self.timeline.get_xaxis_transform(),color=GREEN,fontsize=9,ha='center',va='top',in_layout=False,zorder=11)
+                    self.timeline.text(value,.96,label,transform=self.timeline.get_xaxis_transform(),color=GREEN,alpha=self.app.settings.start_end_opacity,fontsize=9,ha='center',va='top',in_layout=False,zorder=11)
         self.timeline.set_ylim(-.6,max(len(self.visible_track_ids),1)-.4)
         self.timeline.set_yticks(range(len(self.visible_track_ids)),[f'Flight {self.track_ids.index(entity)+1}' for entity in self.visible_track_ids])
         low=min(d['time'][0] for d in self.data.values());high=max(d['time'][-1] for d in self.data.values())
@@ -307,13 +374,15 @@ class PlayerEditor(ttk.Frame):
         self.home_btn.lift()
         x=self.map.bbox.x0+5+self.home_btn.winfo_reqwidth()+3
         y=widget.winfo_height()-self.map.bbox.y1+5
-        for button in (self.map_zoom_out_btn,self.map_zoom_in_btn):
+        for button in (self.map_trails_btn,self.map_zoom_out_btn,self.map_zoom_in_btn):
             button.place(x=x,y=y);button.lift();x+=button.winfo_reqwidth()+3
 
     def update_save_style(self):
-        self.save_btn.configure(style='Selected.TButton' if self.has_changes() else 'TButton')
+        changed=self.has_changes()
+        self.save_btn.configure(style='Selected.TButton' if changed else 'TButton')
+        self.reset_btn.configure(style='NeedsInput.TButton' if changed else 'TButton')
 
-    def set_cursor_at(self,xdata,ydata):
+    def set_cursor_at(self,xdata,ydata,center_map=False):
         if not self.visible_track_ids:return
         lane=int(np.clip(round(ydata),0,len(self.visible_track_ids)-1));self.track_id=self.visible_track_ids[lane]
         t=self.data[self.track_id]['time'];cursor=float(np.clip(xdata,t[0],t[-1]))
@@ -321,7 +390,17 @@ class PlayerEditor(ttk.Frame):
         if matching and matching[0].edit_id!=self.selected_id:
             self.ignore_selection_id=matching[0].edit_id
             self.tree.selection_set(matching[0].edit_id);self.select_attempt()
-        self.cursor=cursor;self.draw()
+        self.cursor=cursor
+        if center_map:
+            if not self.show_full_trails and not matching:
+                self.show_full_trails=True;self.map_trails_btn.configure(text='Hide')
+            data=self.data[self.track_id]
+            if self.interpolated.get():
+                self.map_center=np.array([np.interp(cursor,t,data['map_x']),np.interp(cursor,t,data['map_y'])])
+            else:
+                index=int(np.argmin(abs(t-cursor)))
+                self.map_center=np.array([data['map_x'][index],data['map_y'][index]])
+        self.draw()
 
     def pick_map_point(self,pixel_x,pixel_y):
         """Find the nearest visible flight segment and its interpolated replay time."""
@@ -336,10 +415,15 @@ class PlayerEditor(ttk.Frame):
             closest=start+fraction[:,None]*delta
             distance=np.linalg.norm(closest-point,axis=1)
             distance[~np.isfinite(distance)]=np.inf
+            candidate_time=times[:-1]+fraction*np.diff(times)
+            if not self.show_full_trails:
+                included=np.zeros(len(candidate_time),dtype=bool)
+                for attempt in self.working:
+                    if attempt.entity_id==entity:included|=(candidate_time>=attempt.start)&(candidate_time<=attempt.end)
+                distance[~included]=np.inf
             if not len(distance):continue
             minimum=float(distance.min())
             if minimum>8:continue
-            candidate_time=times[:-1]+fraction*np.diff(times)
             near=np.flatnonzero(distance<=minimum+.25)
             preferred=self.cursor if self.cursor is not None and entity==self.track_id else times[0]
             index=int(near[np.argmin(abs(candidate_time[near]-preferred))])
@@ -388,7 +472,7 @@ class PlayerEditor(ttk.Frame):
     def release(self,event):
         if self.timeline_drag is not None:
             x,limits,width,xdata,ydata,moved=self.timeline_drag;self.timeline_drag=None
-            if not moved:self.set_cursor_at(xdata,ydata)
+            if not moved:self.set_cursor_at(xdata,ydata,center_map=True)
         if self.map_drag is not None:
             x,y,center,radius,width,height,moved=self.map_drag;self.map_drag=None
             if not moved and event.x is not None and event.y is not None and np.hypot(event.x-x,event.y-y)<=4:
@@ -445,6 +529,7 @@ class AttemptEditorPage(ttk.Frame):
         players=sorted({player_label(t['name']) for t in self.app.tracks if t['type']==0 and '(' in t['name']},key=str.casefold) if self.app.carrier is not None else []
         self.selector.configure(values=players,state='readonly' if players and not self.app.busy else 'disabled')
         if players and self.active is None:self.select_player(players[0])
+        elif self.active and hasattr(self.active,'tree'):self.active.refresh_highlights()
 
     def select_player(self,player):
         if self.app.busy or self.app.carrier is None:return
@@ -452,7 +537,7 @@ class AttemptEditorPage(ttk.Frame):
         self.empty.pack_forget();self.player.set(player)
         if player not in self.editors:self.editors[player]=PlayerEditor(self.app,player,self.host)
         self.active=self.editors[player];self.active.pack(fill='both',expand=True)
-        if hasattr(self.active,'canvas'):self.after_idle(self.active.resize)
+        if hasattr(self.active,'canvas'):self.active.refresh_highlights();self.after_idle(self.active.resize)
 
     def reset_player(self,player):
         old=self.editors.pop(player,None)

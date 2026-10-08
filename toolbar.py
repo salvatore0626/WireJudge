@@ -1,7 +1,35 @@
 """Three themed controls using Matplotlib's existing pan/zoom behavior."""
+from types import SimpleNamespace
 import tkinter as tk
 from tkinter import ttk
-from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk,FigureCanvasTkAgg
+
+class DeferredFigureCanvasTkAgg(FigureCanvasTkAgg):
+    """Coalesce native Tk resize events before running expensive figure layout."""
+    def __init__(self,*args,**kwargs):
+        self._resize_job=None
+        self._resize_size=None
+        super().__init__(*args,**kwargs)
+        self._tkcanvas.bind('<Destroy>',self._cancel_resize,add='+')
+
+    def _cancel_resize(self,event=None):
+        if self._resize_job is not None:
+            self._tkcanvas.after_cancel(self._resize_job);self._resize_job=None
+
+    def resize(self,event):
+        self._resize_size=(event.width,event.height)
+        self._cancel_resize()
+        self._resize_job=self._tkcanvas.after(120,self._finish_resize)
+
+    def request_resize(self):
+        self.resize(SimpleNamespace(width=self._tkcanvas.winfo_width(),height=self._tkcanvas.winfo_height()))
+
+    def _finish_resize(self):
+        self._resize_job=None
+        width,height=self._resize_size
+        if width>1 and height>1:
+            super().resize(SimpleNamespace(width=width,height=height))
+
 
 class GraphToolbar(NavigationToolbar2Tk):
     toolitems = (

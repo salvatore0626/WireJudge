@@ -1,7 +1,7 @@
-"""Distance-weighted linear approach scores; no scores until a wire is assigned."""
+"""Distance-weighted approach scores with optional landing points."""
 from dataclasses import dataclass
 import numpy as np
-from engine import glide_start_nm,approach_reference
+from engine import glide_start_nm,approach_reference,speed_deadzone_bounds
 
 WIRE_FIELDS={'Bolter':'scoring_bolter_points','1':'scoring_wire1_points',
              '2':'scoring_wire2_points','3':'scoring_wire3_points','4':'scoring_wire4_points'}
@@ -36,8 +36,7 @@ def score_attempt(attempt,wire,settings,origin_msl_ft):
     return score_case1(attempt,wire,settings,origin_msl_ft)
 
 def score_case1(attempt,wire,settings,origin_msl_ft):
-    if wire not in WIRE_FIELDS:return None
-    wire_score=getattr(settings,WIRE_FIELDS[wire]);upper=glide_start_nm(settings,origin_msl_ft);lower=settings.scoring_changeover_nm
+    wire_score=(getattr(settings,WIRE_FIELDS[wire]) if wire in WIRE_FIELDS else 0.0);upper=glide_start_nm(settings,origin_msl_ft);lower=settings.scoring_changeover_nm
     if upper is None or upper<=lower:
         return Score(0,0,0,wire_score,wire_score,False,dict(loc=0,glide=0,aoa=0),0,0,upper or 0,lower,
                      'Glide End must be closer to the carrier than Glide Start.')
@@ -82,8 +81,7 @@ def score_case1(attempt,wire,settings,origin_msl_ft):
                  '' if complete else 'Provisional: missing approach distance/data earns zero; excluded from ranked best scores.')
 
 def score_case3(attempt,wire,settings,origin_msl_ft):
-    if wire not in WIRE_FIELDS:return None
-    lower=settings.scoring_changeover_nm;upper=settings.case3_glide_start_nm;wire_score=getattr(settings,WIRE_FIELDS[wire])
+    lower=settings.scoring_changeover_nm;upper=settings.case3_glide_start_nm;wire_score=(getattr(settings,WIRE_FIELDS[wire]) if wire in WIRE_FIELDS else 0.0)
     if not 0<lower<upper<=3:raise ValueError('Case 3 must have 0 < Glide End < Glide Start ≤ 3 NM.')
     # Separate uniform grids preserve phase boundaries and full-distance
     # denominators. Platform speed legs are weighted by their judged distance.
@@ -92,7 +90,8 @@ def score_case3(attempt,wire,settings,origin_msl_ft):
     platform_grid=grid(settings.case3_platform_start_nm,settings.case3_platform_end_nm,max(1,int(round((settings.case3_platform_start_nm-settings.case3_platform_end_nm)*512))))
     final_grid=grid(upper,lower,4096);distance=np.r_[platform_grid,final_grid]
     platform=np.arange(len(distance))<len(platform_grid);final=~platform
-    speed_active=platform&(abs(distance/1852-6)>=settings.case3_speed_deadzone_nm/2)
+    near,far=speed_deadzone_bounds(settings)
+    speed_active=platform&((distance/1852<=near)|(distance/1852>=far))
     active_by_key={'position':platform,'speed':speed_active,'loc':final,'glide':final,'aoa':final}
     count=len(distance);keys=('position','speed','loc','glide','aoa')
     fractions={key:np.zeros(count) for key in keys};covered={key:np.zeros(count,dtype=bool) for key in keys}

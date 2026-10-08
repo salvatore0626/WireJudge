@@ -8,11 +8,28 @@ from reader import quaternion_candidate
 @dataclass
 class Settings:
     offset_x: float = 7.0
-    offset_y: float = 6.0
-    offset_z: float = -82.0
+    offset_y: float = 5.7
+    offset_z: float = -50.0
     glide_deg: float = 3.5
     runway_deg: float = -10.0
-    graph_range_nm: float = 2.0
+    graph_range_nm: float = 1.25
+    limit_outline_opacity: float = 0.50
+    limit_shading_opacity: float = 0.10
+    limit_center_opacity: float = 0.40
+    start_end_opacity: float = 0.60
+    show_graph_key: bool = True
+    show_timestamp: bool = False
+    random_animations: bool = True
+    random_animation_frequency_sec: float = 60.0
+    animation_opacity: float = 0.60
+    animation_approach: bool = True
+    animation_scores: bool = True
+    animation_editor: bool = True
+    animation_settings: bool = True
+    replay_procedure_opacity: float = 0.60
+    replay_trail_fade_sec: float = 30.0
+    replay_trail_length_sec: float = 180.0
+    graph_line_width: float = 1.0
     glide_tolerance_deg: float = 0.7
     localizer_tolerance_deg: float = 2.5
     wind_x: float = 0.0
@@ -38,22 +55,30 @@ class Settings:
     case3_platform_speed_knots: float = 50.0
     case3_feather_nm: float = 1.0  # Legacy saved setting; no longer used.
     case3_speed_deadzone_nm: float = 1.0
+    case3_speed_changeover_shift_nm: float = 0.25
     case3_leg1_speed_knots: float = 250.0
     case3_leg2_speed_knots: float = 200.0
-    case3_platform_start_nm: float = 8.0
-    case3_platform_end_nm: float = 3.0
-    scoring_case3_position_points: float = 750.0
-    scoring_case3_speed_points: float = 750.0
+    case3_platform_start_nm: float = 8.5
+    case3_platform_end_nm: float = 3.25
+    scoring_case3_position_points: float = 1000.0
+    scoring_case3_speed_points: float = 1000.0
     scoring_case3_loc_points: float = 1000.0
     scoring_case3_glide_points: float = 1000.0
-    scoring_case3_aoa_points: float = 500.0
+    scoring_case3_aoa_points: float = 1000.0
     case1_glide_start_nm: float = 0.75
     case3_glide_start_nm: float = 2.25
 
     def validate(self):
+        if not 1<=self.random_animation_frequency_sec<=86400:raise ValueError('Random Animation Frequency must be between 1 and 86,400 seconds.')
+        if not 0<=self.animation_opacity<=1:raise ValueError('Animation Opacity must be between 0% and 100%.')
+        if not 0<=self.replay_procedure_opacity<=1:raise ValueError('Procedure Markings opacity must be between 0% and 100%.')
+        if not 0<=self.replay_trail_fade_sec<=3600:raise ValueError('Trail Fade must be between 0 and 3,600 seconds.')
+        if self.replay_trail_length_sec!=-1 and not 0<=self.replay_trail_length_sec<=7200:raise ValueError('Replay trail length must be None or between 0 and 7,200 seconds.')
         if not all(np.isfinite(v) for v in asdict(self).values()): raise ValueError('All values must be finite numbers.')
         if not 0.1 <= self.glide_deg <= 15: raise ValueError('Glide slope must be between 0.1° and 15°.')
         if not -180 <= self.runway_deg <= 180: raise ValueError('Runway offset must be between −180° and 180°.')
+        if any(not 0<=getattr(self,key)<=1 for key in ('limit_outline_opacity','limit_shading_opacity','limit_center_opacity','start_end_opacity')):raise ValueError('Limit opacity must be between 0% and 100%.')
+        if not .5<=self.graph_line_width<=5:raise ValueError('Line thickness must be between 0.5 and 5.')
         if not .1 <= self.graph_range_nm <= 10: raise ValueError('Graph range must be between 0.1 and 10 NM.')
         if not 0 < self.glide_tolerance_deg < 10 or not 0 < self.localizer_tolerance_deg < 30: raise ValueError('Graph envelope angles must be positive and below 10° / 30°.')
         if max(abs(self.offset_x),abs(self.offset_y),abs(self.offset_z))>10000:raise ValueError('Carrier offsets must be within ±10,000 units.')
@@ -72,10 +97,11 @@ class Settings:
         if not 0<self.case3_leg1_speed_knots<=1000 or not 0<self.case3_leg2_speed_knots<=1000:raise ValueError('Leg speeds must be positive and at most 1,000 knots.')
         if not 3<=self.case3_platform_end_nm<self.case3_platform_start_nm<=10:raise ValueError('Platform boundaries must have 3 ≤ Platform End < Platform Start ≤ 10 NM.')
         if self.case3_platform_end_nm<self.case3_glide_start_nm:raise ValueError('Platform End must be at or farther out than Case 3 Glide Start.')
-        half=self.case3_speed_deadzone_nm/2
-        if self.case3_platform_start_nm<=6+half and self.case3_platform_end_nm>=6-half:raise ValueError('The speed deadzone must leave some platform distance available for speed grading.')
+        near,far=speed_deadzone_bounds(self)
+        if self.case3_platform_start_nm<=far and self.case3_platform_end_nm>=near:raise ValueError('The speed deadzone must leave some platform distance available for speed grading.')
         if not 0<=self.case3_feather_nm<=7:raise ValueError('Case 3 limit feathering must be between 0 and 7 NM.')
-        if not 0<=self.case3_speed_deadzone_nm<=6:raise ValueError('Speed Change Deadzone must be between 0 and 6 NM (total width, centered on 6 NM).')
+        if not 0<=self.case3_speed_deadzone_nm<=6:raise ValueError('Speed Change Deadzone must be between 0 and 6 NM (total width).')
+        if not 3<=near<=far<=10:raise ValueError('Speed changeover shift and deadzone must place the deadzone between 3 and 10 NM.')
         if any(not 0<=getattr(self,name)<=1e6 for name in self.__dataclass_fields__ if name.startswith('scoring_') and name.endswith('_points')):
             raise ValueError('Scoring points must be between 0 and 1,000,000.')
 
@@ -91,6 +117,12 @@ class Settings:
     def save(self,path):
         self.validate();p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
         tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(asdict(self),indent=2));tmp.replace(p)
+
+def speed_deadzone_bounds(settings):
+    """Center the ungraded band on 6 NM plus the shift; positive moves left."""
+    center=6+settings.case3_speed_changeover_shift_nm
+    half=settings.case3_speed_deadzone_nm/2
+    return center-half,center+half
 
 @dataclass
 class Attempt:
@@ -199,6 +231,21 @@ def velocity_from_positions(rows,max_gap=3):
     invalid=np.r_[bad,False]|np.r_[False,bad]
     v[invalid]=np.nan
     return v
+
+def black_box_data(track,attempt):
+    """Motion diagnostics; attitude uses the existing candidate rotation decoder."""
+    rows=clean_rows(track['rows']);velocity=velocity_from_positions(rows)
+    q=quaternion_candidate(rows[:,7])
+    forward=rotate(q,np.broadcast_to([0.,0.,1.],(len(rows),3)))
+    right=rotate(q,np.broadcast_to([1.,0.,0.],(len(rows),3)))
+    up=rotate(q,np.broadcast_to([0.,1.,0.],(len(rows),3)))
+    horizontal=np.linalg.norm(velocity[:,[0,2]],axis=1)
+    angle=np.degrees(np.arctan2(velocity[:,1],horizontal));angle[horizontal<5]=np.nan
+    keep=(rows[:,0]>=attempt.start)&(rows[:,0]<=attempt.end)
+    return dict(distance=np.interp(rows[keep,0],attempt.time,attempt.distance)/1852,
+                vertical_speed=velocity[keep,1]*3.280839895*60,
+                flight_path=angle[keep],pitch=np.degrees(np.arcsin(np.clip(forward[keep,1],-1,1))),
+                bank=np.degrees(np.arctan2(-right[keep,1],up[keep,1])))
 
 def groundspeed_from_positions(rows):
     """World-horizontal speed, including ship travel; never infer airspeed."""
@@ -349,3 +396,30 @@ def last_attempts(attempts):
 
 def clock(seconds):
     seconds=int(seconds);return f'{seconds//3600:02}:{seconds//60%60:02}:{seconds%60:02}'
+
+
+def auto_bolter(attempt):
+    """Low deck pass followed by continuous flight more than 0.35 NM away."""
+    t=np.asarray(attempt.time);d=np.asarray(attempt.distance)
+    h=np.asarray(attempt.height);l=np.asarray(attempt.lateral)
+    armed=False
+    for i in range(len(t)-1):
+        dt=t[i+1]-t[i]
+        values=np.array([d[i],d[i+1],h[i],h[i+1],l[i],l[i+1]])
+        if dt<=0 or dt>20 or not np.isfinite(values).all():
+            armed=False;continue
+        speed=float(np.linalg.norm([d[i+1]-d[i],h[i+1]-h[i],l[i+1]-l[i]])/dt)
+        if armed and speed<8:return False
+        if speed>350 or speed<8:
+            armed=False;continue
+        # Use the closest point on an inbound segment, including sparse keyframes.
+        if d[i]>d[i+1] and d[i]>0 and d[i+1]<185.2:
+            fraction=float(np.clip(d[i]/(d[i]-d[i+1]),0,1))
+            distance=d[i]+fraction*(d[i+1]-d[i])
+            height=h[i]+fraction*(h[i+1]-h[i])
+            lateral=l[i]+fraction*(l[i+1]-l[i])
+            if abs(distance)<=185.2 and abs(lateral)<=60 and -10<=height<=15:
+                armed=True
+        if armed and d[i+1]<0 and np.hypot(d[i+1],l[i+1])>0.35*1852:return True
+        if armed and d[i+1]>185.2:armed=False
+    return False

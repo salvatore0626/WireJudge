@@ -1,6 +1,7 @@
 """Independent, bounded reader for the v1 VTR motion-track section.
 Rotation is retained as its raw packed 32-bit value. Custom/event sections
-are not decoded. No input files are modified.
+are not generally decoded; pooled projectile positions are read separately.
+No input files are modified.
 """
 import ctypes, ctypes.util, struct
 from pathlib import Path
@@ -68,7 +69,38 @@ def read_motion(path):
         if not np.isfinite(rows).all():raise ValueError('Non-finite motion data')
         tracks.append(dict(id=entity,type=kind,identity=identity,name=label,rows=rows))
     end=r.offset;custom_count=r.read('i')
+    tracks.extend(read_pooled_projectiles(data,r.offset))
     return tracks,dict(version=version,decoded_bytes=len(data),motion_end=end,custom_count=custom_count)
+
+def read_pooled_projectiles(data,start):
+    """Read the observed fixed-width pooled-projectile records, skipping other custom types."""
+    key='VTOLVR.ReplaySystem.VTRPooledProjectile+PooledProjectileKeyframe'
+    metadata='VTOLVR.ReplaySystem.VTRPooledProjectile+PooledProjectileMetadata'
+    needle=struct.pack('<i',len(key))+key.encode()+struct.pack('<i',len(metadata))+metadata.encode()
+    dtype=np.dtype([('time','<f4'),('active','u1'),('position','<f4',(3,)),('velocity','<f4',(3,))])
+    result=[];offset=start
+    while True:
+        offset=data.find(needle,offset)
+        if offset<0:break
+        header=offset;offset+=len(needle)
+        if header<start+4 or offset+4>len(data):continue
+        entity=struct.unpack_from('<i',data,header-4)[0];count=struct.unpack_from('<i',data,offset)[0]
+        if entity<0 or not 1<=count<=1000000 or offset+4+count*dtype.itemsize>len(data):continue
+        frames=np.frombuffer(data,dtype=dtype,count=count,offset=offset+4)
+        if not np.isfinite(frames['time']).all() or np.any(np.diff(frames['time'])<0) or np.any(frames['active']>1):continue
+        if not np.isfinite(frames['position']).all() or not np.isfinite(frames['velocity']).all():continue
+        active=frames['active']==1;indices=np.flatnonzero(active)
+        groups=np.split(indices,np.flatnonzero(np.diff(indices)>1)+1) if len(indices) else []
+        for number,group in enumerate(groups):
+            chosen=frames[group];rows=np.zeros((len(group),8),dtype=float)
+            rows[:,0]=chosen['time'];rows[:,1:4]=chosen['position'];rows[:,4:7]=chosen['velocity']
+            if len(rows)==1 and group[-1]+1<len(frames):
+                last=rows[-1].copy();last[0]=frames['time'][group[-1]+1]
+                last[1:4]+=last[4:7]*(last[0]-rows[-1,0]);rows=np.vstack((rows,last))
+            if len(rows)<2:continue
+            result.append(dict(id=-((entity+1)*100000+number),type=-1,identity=None,name='Cannon Round',
+                               rows=rows,pooled_projectile=True))
+    return result
 
 def quaternion_candidate(packed):
     """Hypothesis: signed bytes in x,y,z,w order, normalized. Not authoritative."""

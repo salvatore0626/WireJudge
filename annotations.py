@@ -3,7 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 
-WIRE_OPTIONS = ('Bolter', '1', '2', '3', '4')
+WIRE_OPTIONS = ('', 'Bolter', '1', '2', '3', '4')
 
 def replay_digest(path):
     digest = hashlib.sha256()
@@ -40,7 +40,7 @@ class Annotations:
 
     def set(self, carrier, attempt, wire):
         if wire not in WIRE_OPTIONS:
-            raise ValueError('Choose Bolter or wire 1, 2, 3, or 4.')
+            raise ValueError('Choose an empty wire, Bolter, or wire 1, 2, 3, or 4.')
         rows = [dict(r) for r in self.rows]
         previous = self.find(carrier, attempt)
         if previous:
