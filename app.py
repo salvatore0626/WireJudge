@@ -1,4 +1,4 @@
-"""Wire Judge v1.1 — local native-VTR approach viewer."""
+"""Wire Judge 2 — local native-VTR approach viewer."""
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
@@ -20,7 +20,7 @@ SETTINGS_PATH=Path.home()/'.wire_judge'/'settings.json'
 ANNOTATIONS_DIR=Path.home()/'.wire_judge'/'annotations'
 AGREEMENT_PATH=Path.home()/'.wire_judge'/'agreement.json'
 ASSETS_DIR=Path(__file__).resolve().parent/'assets'
-APP_VERSION='1.1'
+APP_VERSION='1.2'
 STARTUP_TERMS=(
     'All scores and calculations are subject to change. By clicking “I Agree,” you acknowledge that STRAYDOG and any applications created by STRAYDOG are not responsible for emotional distress, bruised egos, damaged flight controls, or heated Discord arguments resulting from your questionable approach.',
     'Software bugs and calculation errors may occur. However, their existence does not automatically explain your bolter.',
