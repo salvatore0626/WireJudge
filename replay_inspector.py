@@ -4,7 +4,7 @@ from tkinter import ttk
 from dataclasses import asdict
 import numpy as np
 from matplotlib.figure import Figure
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import MultipleLocator
 from engine import (full_track,quaternion_candidate,rotate,inverse,velocity_from_positions,
                     approach_reference,glide_origin_msl_ft,interpolate_quaternions)
 from plots import BG,PANEL,TEXT,MUTED
@@ -15,12 +15,27 @@ METRICS={'speed':('Speed','kt','#69b7ff'),'aoa':('AoA','°','#8dd8ff'),
          'bank':('Bank','°','#ffb2b8'),'pitch':('Pitch','°','#ffe879'),
          'loc':('Loc Offset','°','#ff9850'),'glide':('Glide Offset','°','#b491ff')}
 WINDOWS={'30 seconds':30,'2 min':120,'5 min':300,'10 min':600}
+AXIS_MINIMUMS={'speed':(1,10),'aoa':(.5,4),'vs':(50,200),'altitude':(10,200),
+               'bank':(1,10),'pitch':(1,10),'loc':(1,10),'glide':(1,10)}
+
+def metric_axis_range(key,values):
+    minimum_step,minimum_range=AXIS_MINIMUMS[key]
+    finite=np.asarray(values)[np.isfinite(values)]
+    low=float(np.min(finite)) if len(finite) else 0.
+    high=float(np.max(finite)) if len(finite) else 0.
+    spread=max(minimum_range,(high-low)*1.1)
+    center=(low+high)/2
+    target=max(minimum_step,spread/4)
+    magnitude=10**np.floor(np.log10(target/minimum_step))
+    step=next(factor*minimum_step*magnitude for factor in (1,2,2.5,5,10)
+              if factor*minimum_step*magnitude>=target)
+    return center-spread/2,center+spread/2,step
 
 def diagnostic_samples(track,carrier,settings):
     data=full_track(track,carrier,settings);rows=data['rows'];t=data['time']
     q=quaternion_candidate(rows[:,7]);forward=rotate(q,np.broadcast_to([0.,0.,1.],(len(t),3)))
     right=rotate(q,np.broadcast_to([1.,0.,0.],(len(t),3)));up=rotate(q,np.broadcast_to([0.,1.,0.],(len(t),3)))
-    velocity=velocity_from_positions(rows,max_gap=np.inf)
+    velocity=velocity_from_positions(rows,max_gap=np.inf,max_speed=4000 if track['type']==6 else 650)
     body=rotate(inverse(q),velocity-np.array([settings.wind_x,settings.wind_y,settings.wind_z]))
     aoa=np.degrees(np.arctan2(-body[:,1],body[:,2]));aoa[(np.linalg.norm(body,axis=1)<25)|(body[:,2]<10)]=np.nan
     reference=approach_reference(settings,data['distance'],glide_origin_msl_ft(carrier,settings))
@@ -37,7 +52,9 @@ def diagnostic_samples(track,carrier,settings):
 class ReplayInspector(ttk.Frame):
     def __init__(self,page,parent):
         super().__init__(parent,padding=(0,8,0,0));self.page=page;self.selected=None;self.samples=None;self.signature=None
+        self.popout_window=None;self.docked_inspector=None
         self.metrics={'speed'};self.lines={};self.axes={};self.last_values=None
+        self.graph_background=None;self.axis_scale_times={};self.axis_steps={};self.graph_window=None
         self.title=tk.StringVar(value='Inspector');ttk.Label(self,textvariable=self.title,font=('Helvetica',11,'bold')).pack(anchor='w')
         self.attitude=tk.Canvas(self,height=92,background=BG,highlightthickness=0)
         self.attitude.pack(fill='x');self.attitude.bind('<Configure>',lambda event:self.draw_attitude())
@@ -53,8 +70,48 @@ class ReplayInspector(ttk.Frame):
         self.window=tk.StringVar(value='2 min');self.selector=ttk.Combobox(controls,textvariable=self.window,values=tuple(WINDOWS),state='readonly',width=12)
         self.selector.pack(side='left');self.selector.bind('<<ComboboxSelected>>',lambda event:self.update(self.page.cursor))
         self.fig=Figure(figsize=(3,2),dpi=100,facecolor=BG)
+        footer=ttk.Frame(self);footer.pack(side='bottom',fill='x',pady=(4,0))
+        self.popout_button=ttk.Button(footer,text='Pop Out',command=self.pop_out,style='Inspector.TButton')
+        self.popout_button.pack(side='left')
         self.canvas=DeferredFigureCanvasTkAgg(self.fig,master=self);self.canvas.get_tk_widget().pack(fill='both',expand=True)
+        self.canvas.mpl_connect('resize_event',lambda event:self.graph_margins())
+        self.canvas.mpl_connect('draw_event',self.graph_drawn)
         self.build_graph();self.draw_attitude()
+
+    def copy_state_from(self,other):
+        self.metrics=set(other.metrics);self.window.set(other.window.get())
+        for key,button in self.buttons.items():
+            button.configure(style='Inspector.Selected.TButton' if key in self.metrics else 'Inspector.TButton')
+        self.build_graph();self.select(other.selected)
+
+    def pop_out(self):
+        if self.popout_window is not None:
+            self.popout_window.lift();return
+        window=tk.Toplevel(self.page.app);window.title('Wire Judge · Inspector')
+        window.configure(background=BG);window.geometry('460x650');window.minsize(340,420)
+        inspector=ReplayInspector(self.page,window)
+        inspector.pack(fill='both',expand=True,padx=10,pady=10)
+        inspector.docked_inspector=self;inspector.popout_window=window
+        inspector.popout_button.configure(text='Pop In',command=inspector.pop_in)
+        inspector.copy_state_from(self)
+        self.popout_window=window;self.grid_remove()
+        self.master.rowconfigure(0,uniform='');self.master.rowconfigure(1,weight=0,uniform='')
+        self.page.inspector=inspector
+        window.protocol('WM_DELETE_WINDOW',inspector.pop_in)
+
+    def pop_in(self):
+        dock=self.docked_inspector
+        if dock is None:return
+        dock.copy_state_from(self);self.page.inspector=dock
+        dock.popout_window=None;dock.grid()
+        dock.master.rowconfigure(0,weight=1,uniform='sidebar')
+        dock.master.rowconfigure(1,weight=1,uniform='sidebar')
+        for attribute in ('_idle_draw_id','_resize_job'):
+            job=getattr(self.canvas,attribute,None)
+            if job is not None:
+                self.canvas.get_tk_widget().after_cancel(job);setattr(self.canvas,attribute,None)
+        self.popout_window.destroy()
+        self.page.update_frame()
 
     def select(self,key):
         self.selected=key;self.signature=None;self.update(self.page.cursor)
@@ -66,6 +123,7 @@ class ReplayInspector(ttk.Frame):
         self.build_graph();self.update(self.page.cursor)
 
     def build_graph(self):
+        self.graph_background=None;self.axis_scale_times={};self.axis_steps={};self.graph_window=None
         self.fig.clear();self.axes={};self.lines={}
         keys=[key for key in METRICS if key in self.metrics]
         if not keys:
@@ -77,26 +135,61 @@ class ReplayInspector(ttk.Frame):
                 ax.grid(color='#334357',alpha=.4,lw=.5)
                 for spine in ax.spines.values():spine.set_color('#344258')
                 short_label={'loc':'Loc','glide':'Glide','vs':'V/S','altitude':'Alt'}.get(key,label)
-                ax.set_ylabel(short_label+'\n'+unit,color=color,fontsize=7,labelpad=14,rotation=0,ha='right',va='center')
-                ax.yaxis.set_major_locator(MaxNLocator(nbins=2))
+                ax.text(.02,.96,short_label+' · '+unit,transform=ax.transAxes,color=color,fontsize=7,
+                        ha='left',va='top',bbox=dict(facecolor=PANEL,edgecolor='none',alpha=.8,pad=1))
+                low,high,step=metric_axis_range(key,[])
+                ax.set_ylim(low,high);ax.yaxis.set_major_locator(MultipleLocator(step))
+                self.axis_steps[key]=step
                 ax.tick_params(labelbottom=index==len(keys)-1)
-                self.lines[key],=ax.plot([],[],color=color,lw=1.1);self.axes[key]=ax
+                self.lines[key],=ax.plot([],[],color=color,lw=1.1,animated=True);self.axes[key]=ax
             axes[-1].set_xlabel('Seconds before cursor',color=MUTED,fontsize=7,labelpad=2)
-            self.fig.subplots_adjust(left=.25,right=.96,bottom=.19,top=.96,hspace=.35)
+            self.graph_margins()
         self.canvas.draw_idle()
+
+    def graph_margins(self):
+        self.graph_background=None
+        width,height=self.fig.bbox.width,self.fig.bbox.height
+        self.fig.subplots_adjust(left=min(.3,45/max(width,1)),right=1-min(.08,8/max(width,1)),
+                                 bottom=min(.3,35/max(height,1)),top=1-min(.08,10/max(height,1)),hspace=.35)
+
+    def graph_drawn(self,event):
+        self.graph_background=self.canvas.copy_from_bbox(self.fig.bbox)
+        self.paint_graph()
+
+    def paint_graph(self):
+        if self.graph_background is None:
+            self.canvas.draw_idle();return
+        self.canvas.restore_region(self.graph_background)
+        for key,line in self.lines.items():self.axes[key].draw_artist(line)
+        self.canvas.blit(self.fig.bbox)
+
+    def set_graph_scale(self,key,y,cursor,reset):
+        ax=self.axes[key];low,high,step=metric_axis_range(key,y)
+        low=np.floor(low/step)*step;high=np.ceil(high/step)*step
+        previous=ax.get_ylim();finite=np.asarray(y)[np.isfinite(y)]
+        outside=len(finite) and (np.min(finite)<previous[0] or np.max(finite)>previous[1])
+        shrink=previous[1]-previous[0]>2*(high-low) and abs(cursor-self.axis_scale_times.get(key,cursor))>=2
+        if reset or outside or shrink:
+            if previous!=(low,high):
+                ax.set_ylim(low,high);self.graph_background=None
+            if self.axis_steps[key]!=step:
+                ax.yaxis.set_major_locator(MultipleLocator(step));self.graph_background=None
+                self.axis_steps[key]=step
+            self.axis_scale_times[key]=cursor
 
     def update(self,cursor):
         matches=[d for d in self.page.data if self.selected is not None and d.get('inspect_key')==self.selected]
         active=next((d for d in matches if d['time'][0]<=cursor<=d['time'][-1]),None)
         chosen=active or (min(matches,key=lambda d:min(abs(cursor-d['time'][0]),abs(cursor-d['time'][-1]))) if matches else None)
         signature=(chosen['entity'] if chosen else None,id(self.page.app.carrier),asdict(self.page.app.settings))
+        reset_scale=signature!=self.signature
         if signature!=self.signature:
             self.signature=signature;self.samples=None
             if chosen:
                 try:self.samples=diagnostic_samples(chosen['track'],self.page.app.carrier,self.page.app.settings)
                 except (ValueError,IndexError):pass
         username=chosen['player'] if chosen and '(' in chosen['track']['name'] else 'AI'
-        self.title.set(username+' - '+chosen['callsign'] if chosen else 'Inspector')
+        self.title.set(chosen['track']['name'] if chosen and chosen['category']=='missile' else username+' - '+chosen['callsign'] if chosen else 'Inspector')
         values={key:np.nan for key in METRICS};values['dme']=np.nan
         if self.samples is not None and active:
             t=self.samples['time'];i=min(max(1,int(np.searchsorted(t,cursor))),len(t)-1)
@@ -116,6 +209,8 @@ class ReplayInspector(ttk.Frame):
         for key,(label,unit,color) in METRICS.items():
             value=values[key];self.buttons[key].configure(text=f'{label}: {value:.1f} {unit}' if np.isfinite(value) else label+': —')
         window=WINDOWS[self.window.get()]
+        reset_scale=reset_scale or window!=self.graph_window
+        self.graph_window=window
         for key,ax in self.axes.items():
             x=[];y=[]
             if self.samples is not None:
@@ -130,8 +225,10 @@ class ReplayInspector(ttk.Frame):
                         following=np.flatnonzero(times>=t[index])
                         if len(following):y[following[0]]=np.nan
                     x=times-cursor
-            self.lines[key].set_data(x,y);ax.set_xlim(-window,0);ax.relim();ax.autoscale_view(scalex=False,scaley=True)
-        self.canvas.draw_idle()
+            self.lines[key].set_data(x,y)
+            if ax.get_xlim()!=(-window,0):ax.set_xlim(-window,0);self.graph_background=None
+            self.set_graph_scale(key,y,cursor,reset_scale)
+        self.paint_graph()
 
     def draw_attitude(self):
         canvas=self.attitude;canvas.delete('all');width=max(canvas.winfo_width(),260)

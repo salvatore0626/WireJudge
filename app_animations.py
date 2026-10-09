@@ -8,6 +8,8 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.collections import LineCollection
+from matplotlib.path import Path
+from matplotlib.transforms import Affine2D
 from replay_trails import trail_segments,trail_colors
 from replay_style import (PALETTE,ENEMY_COLOR,AIRCRAFT_SIZE,AIRCRAFT_TRAIL_WIDTH,
                           MISSILE_COLOR,MISSILE_TRAIL_WIDTH,aircraft_marker,
@@ -17,6 +19,9 @@ from animation_overlay import AnimationOverlay
 class AircraftScene:
     def __init__(self,width,height,kind=None):
         self.width=width;self.height=height;self.kind=kind or random.choice(('formation','joinup','fight'))
+        self.lasers=[];self.laser_hits=[]
+        if self.kind=='ufo':
+            self.build_ufo();self.ensure_offscreen();self.finish_paths();return
         if self.kind=='kiss_off':
             self.build_kiss_off()
             self.ensure_offscreen();self.finish_paths();return
@@ -91,6 +96,51 @@ class AircraftScene:
                     if self.launch_possible(source,target,battle+7):self.fire(source,target,battle+7,True)
         if formation_scene:self.ensure_offscreen()
         self.finish_paths()
+
+    def build_ufo(self):
+        self.times=np.arange(0,42.05,.05);self.actors=[];self.missiles=[]
+        self.color='#69b7ff';w=self.width;h=self.height
+        def path(knots):
+            knots=np.asarray(knots,dtype=float);times=knots[:,0];points=knots[:,1:]
+            tangents=np.gradient(points,times,axis=0)
+            index=np.clip(np.searchsorted(times,self.times,side='right')-1,0,len(times)-2)
+            dt=times[index+1]-times[index];u=(self.times-times[index])/dt
+            return ((2*u**3-3*u**2+1)[:,None]*points[index]+(u**3-2*u**2+u)[:,None]*dt[:,None]*tangents[index]+
+                    (-2*u**3+3*u**2)[:,None]*points[index+1]+(u**3-u**2)[:,None]*dt[:,None]*tangents[index+1])
+        for i in range(4):
+            offset=(i-1.5)*h*.035
+            # Integrate smooth heading changes at constant speed, rather than
+            # accelerating between widely separated choreography waypoints.
+            speed=w/34*1.1
+            turn=(-32,32,-18,18)[i];recover=(0,0,-8,-12)[i]
+            heading=turn*self.smooth(np.clip((self.times-11)/6,0,1))
+            heading+=(recover-turn)*self.smooth(np.clip((self.times-(22 if i<2 else 19))/6,0,1))
+            heading-=recover*self.smooth(np.clip((self.times-25)/6,0,1))
+            heading=np.radians(heading)
+            steps=np.column_stack((np.cos(heading),np.sin(heading)))*speed*.05
+            route=np.array((-100-i*35,h*.53+offset))+np.vstack((np.zeros(2),np.cumsum(steps[:-1],axis=0)))
+            self.actors.append(dict(path=route,color=self.color,team='friendly',death=float('inf')))
+        knots=[(0,w+300,h*.18),(8,w+140,h*.18),(11,w*.90,h*.28),(14,w*.45,h*.40),
+               (17,w*.30,h*.22),(21,w*.63,h*.14),(25,w*.80,h*.28),(30,w+140,h*.40),(42,w+1500,h*.40)]
+        self.actors.append(dict(path=path(knots),color='#b8f3ff',team='ufo',death=float('inf'),ufo=True))
+        for fire,target in ((11.,0),(11.7,1),(12.4,0),(13.1,1)):
+            if self.actors[target]['death']>fire and self.launch_possible(4,target,fire):self.fire(4,target,fire,random.random()<.25)
+        for fire,source in ((24.,2),(26.,3)):
+            if self.launch_possible(source,4,fire):self.fire(source,4,fire,False)
+        for target in (0,1):
+            fire=14.3+target*.8
+            if self.actors[target]['death']<=fire:continue
+            hit=random.random()<.5;terminal=fire+.4
+            hit=hit and terminal<self.actors[target]['death']
+            direction=self.position(self.actors[target],fire)-self.position(self.actors[4],fire)
+            normal=np.array((-direction[1],direction[0]))/max(np.linalg.norm(direction),1)
+            side=random.choice((-1,1))
+            for pulse in range(3):
+                impact=hit and pulse==2
+                offset=np.zeros(2) if impact else normal*side*random.uniform(25,65)
+                self.lasers.append(dict(source=4,target=target,fire=fire+pulse*.15,duration=.1,offset=offset))
+            if hit:
+                self.actors[target]['death']=terminal;self.laser_hits.append((target,terminal))
 
     def build_kiss_off(self):
         """Lead-first echelon-right breaks, all rolling onto one downwind."""
@@ -193,18 +243,20 @@ class AircraftScene:
         if a['death']<=t or b['death']<=t:return False
         velocity=self.velocity(a,t);relative=self.position(b,t)-self.position(a,t)
         distance=np.linalg.norm(relative)
-        return 65<distance<800 and np.dot(velocity,relative)>math.cos(math.radians(55))*np.linalg.norm(velocity)*distance
+        maximum=max(800,self.width*1.2) if a.get('ufo') else 800
+        return 65<distance<maximum and np.dot(velocity,relative)>math.cos(math.radians(55))*np.linalg.norm(velocity)*distance
 
     def fire(self,source,target,fire,hit):
         if not self.launch_possible(source,target,fire):return
         shooter=self.actors[source];victim=self.actors[target]
+        ufo_shot=shooter.get('ufo',False)
         position=self.position(shooter,fire);velocity=self.velocity(shooter,fire)
         launch_velocity=velocity.copy();launch_speed=np.linalg.norm(velocity)
         heading=math.atan2(velocity[1],velocity[0]);miss_side=random.choice((-1,1));random_offset=random.uniform(25,50)
         points=[position.copy()];ages=[0.];actual_hit=False;step=.02
         coast_age=None;coast_speed=0.;coast_duration=random.uniform(.65,1.1)
         closest=np.linalg.norm(self.position(victim,fire)-position)
-        for i in range(1,601):
+        for i in range(1,251 if ufo_shot else 601):
             age=(i-1)*step;now=fire+age
             # First step inherits the aircraft velocity exactly. Boost builds
             # gradually to roughly 2.7x launch speed, then the missile coasts.
@@ -212,9 +264,9 @@ class AircraftScene:
             target_position=self.position(victim,now+step)
             if hit and victim['death']>now and np.linalg.norm(position-target_position)<6:
                 actual_hit=True;break
-            speed_ratio=np.interp(i*step,(0,1,3,6),(1,1.44,2.14,2.68))
+            speed_ratio=np.interp(i*step,(0,.25,.7,1.5),(1,2.5,5,7)) if ufo_shot else np.interp(i*step,(0,1,3,6),(1,1.44,2.14,2.68))
             if i*step>6:speed_ratio*=math.exp(-.025*(i*step-6))
-            speed=launch_speed*speed_ratio
+            speed=launch_speed*speed_ratio*(.85 if ufo_shot else 1)
             target_velocity=self.velocity(victim,now+step)
             relative=target_position-position
             distance=np.linalg.norm(relative)
@@ -240,7 +292,7 @@ class AircraftScene:
                 aim+=normal*miss_side*random_offset
             desired=math.atan2(aim[1]-position[1],aim[0]-position[0])
             error=(desired-heading+math.pi)%math.tau-math.pi
-            limit=math.radians(30)*(1-math.exp(-max(age-.15,0)/1.2))*step
+            limit=math.radians(90 if ufo_shot else 30)*(1-math.exp(-max(age-.15,0)/(.25 if ufo_shot else 1.2)))*step
             if age>.15 and (hit or age<7):heading+=float(np.clip(error,-limit,limit))
             velocity=np.array((math.cos(heading),math.sin(heading)))*speed
             if not hit and age>8 and not (-100<position[0]<self.width+100 and -100<position[1]<self.height+100):break
@@ -259,6 +311,7 @@ class AircraftScene:
         for actor in self.actors:actor['path']*=scale
         for missile in self.missiles:
             missile['path']*=scale;missile['launch_velocity']*=scale
+        for laser in self.lasers:laser['offset']*=scale
         self.width=width;self.height=height
         if hasattr(self,'figure'):del self.figure
 
@@ -270,12 +323,14 @@ class AircraftScene:
         self.artists=[]
         for actor in self.actors:
             line=LineCollection([],linewidths=AIRCRAFT_TRAIL_WIDTH,zorder=3);ax.add_collection(line)
-            marker,=ax.plot([],[],color=actor['color'],marker='^',markersize=AIRCRAFT_SIZE,ls='',zorder=11)
+            marker,=ax.plot([],[],color=actor['color'],marker='^',markersize=11 if actor.get('ufo') else 5 if self.kind=='ufo' else AIRCRAFT_SIZE,ls='',zorder=11)
             self.artists.append((line,marker))
         self.missile_trails=LineCollection([],linewidths=MISSILE_TRAIL_WIDTH,linestyles='dashed',zorder=4)
         ax.add_collection(self.missile_trails)
         self.missile_markers=ax.scatter([],[],s=7,marker='D',color=MISSILE_COLOR,zorder=12)
         self.explosions=ax.scatter([],[],s=[],marker='o',facecolors='none',edgecolors=[],linewidths=2,zorder=13)
+        self.laser_glow=LineCollection([],colors='#a9f7ff',linewidths=4,zorder=14);ax.add_collection(self.laser_glow)
+        self.laser_core=LineCollection([],colors='#eaffff',linewidths=1.1,zorder=15);ax.add_collection(self.laser_core)
 
     def trail(self,position,t,start=0):
         oldest=max(start,t-5)
@@ -300,8 +355,28 @@ class AircraftScene:
                     segments,alpha=trail_segments(dict(time=times,trail_time=times,x=points[:,0],y=points[:,1],breaks=[]),t,5,2.5)
             line.set_segments(segments);line.set_colors(trail_colors(actor['color'],alpha,.7*opacity))
             x,y=position(t);px,py=position(t-.05)
-            marker.set_data([x],[y]);marker.set_marker(aircraft_marker(x-px,py-y));marker.set_alpha(opacity)
+            marker.set_data([x],[y]);marker.set_alpha(opacity)
+            if actor.get('ufo'):
+                spokes=[]
+                for angle in (0,math.tau/3,math.tau*2/3):
+                    direction=np.array([math.cos(angle),math.sin(angle)])
+                    spokes.append(Path([direction*.35,direction*.95],[Path.MOVETO,Path.LINETO]))
+                shape=Path.make_compound_path(Path.unit_circle(),*spokes)
+                marker.set_marker(shape.transformed(Affine2D().rotate(t*5)))
+                marker.set_markerfacecolor('none');marker.set_markeredgewidth(1.3)
+            else:marker.set_marker(aircraft_marker(x-px,py-y))
         missile_points=[];missile_segments=[];missile_colors=[];bursts=[]
+        beams=[];beam_alpha=[]
+        for laser in self.lasers:
+            age=t-laser['fire']
+            if 0<=age<laser['duration'] and self.actors[laser['target']]['death']>=laser['fire']:
+                beams.append([self.position(self.actors[laser['source']],t),self.position(self.actors[laser['target']],t)+laser['offset']])
+                beam_alpha.append(opacity*(1-age/laser['duration']))
+        self.laser_glow.set_segments(beams);self.laser_glow.set_alpha(np.asarray(beam_alpha)*.3 if beam_alpha else 0)
+        self.laser_core.set_segments(beams);self.laser_core.set_alpha(np.asarray(beam_alpha) if beam_alpha else 0)
+        for target,death in self.laser_hits:
+            if t>=death:
+                point=self.position(self.actors[target],death);bursts.append((*point,t-death))
         for missile in self.missiles:
             terminal=missile['terminal']
             position=lambda sample:self.missile_position(missile,sample)
@@ -328,8 +403,19 @@ class AircraftScene:
 class ApplicationAnimations:
     def __init__(self,app):
         self.app=app;self.scene=None;self.host=None;self.overlay=None;self.scene_bag=[];self.splash_scenes=[]
+        self.ufo_requested=False;self.ufo_active=False;self.ufo_next_allowed=0.
         self.next_scene=time.monotonic()+.5;self.started=0;self.timer=app.after(50,self.tick)
         app.bind('<Destroy>',self.destroyed,add='+')
+        app.bind('<KeyPress-u>',self.trigger_ufo,add='+');app.bind('<KeyPress-U>',self.trigger_ufo,add='+')
+
+    def trigger_ufo(self,event=None,from_logo=False):
+        focus=self.app.focus_get()
+        if not from_logo and focus is not None and focus.winfo_class() in ('Entry','TEntry','Text','TCombobox','Spinbox','TSpinbox'):return
+        if self.app.pages.select()==str(self.app.replay_map) and self.app.startup_splash is None:return
+        now=time.monotonic()
+        if not self.ufo_requested and not self.ufo_active and now>=self.ufo_next_allowed:
+            self.ufo_requested=True;self.ufo_next_allowed=now+60
+        return 'break'
 
     def destroyed(self,event):
         if event.widget is self.app and self.timer is not None:
@@ -340,7 +426,7 @@ class ApplicationAnimations:
 
     def clear(self):
         if self.overlay is not None:self.overlay.close();self.overlay=None
-        self.scene=None;self.splash_scenes=[]
+        self.scene=None;self.splash_scenes=[];self.ufo_active=False
 
     def next_kind(self):
         if not self.scene_bag:
@@ -366,7 +452,18 @@ class ApplicationAnimations:
             if configuration!=getattr(self,'configuration',None):
                 self.next_scene=self.started+interval if self.scene is not None else now+.5
                 self.configuration=configuration
-            if not enabled:
+            if self.ufo_requested:
+                self.clear();self.ufo_requested=False;self.ufo_active=True
+                surface=host.winfo_toplevel()
+                self.scene=AircraftScene(max(1,surface.winfo_width()),max(1,surface.winfo_height()),'ufo')
+                self.overlay=AnimationOverlay(self.app,surface);self.started=now
+            if self.ufo_active:
+                if now-self.started>self.scene.duration:
+                    self.clear();self.next_scene=now+interval
+                elif host.winfo_ismapped() and self.app.state()!='iconic':
+                    surface=host.winfo_toplevel();self.scene.resize(max(1,surface.winfo_width()),max(1,surface.winfo_height()))
+                    self.overlay.draw(self.scene.draw(now-self.started,settings.animation_opacity or .6),surface.winfo_rootx(),surface.winfo_rooty())
+            elif not enabled:
                 if self.scene is not None or self.overlay is not None:self.clear()
             elif host is splash:
                 surface=host.winfo_toplevel();width=max(1,surface.winfo_width());height=max(1,surface.winfo_height())

@@ -2,8 +2,8 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.legend_handler import HandlerBase
-from matplotlib.ticker import Locator,MaxNLocator,FuncFormatter
-from engine import glide_start_nm,approach_reference,speed_deadzone_bounds,clock
+from matplotlib.ticker import Locator,MaxNLocator,FuncFormatter,MultipleLocator
+from engine import glide_start_nm,approach_reference,speed_deadzone_bounds,clock,BLACK_BOX_METRICS
 
 BG='#111a28';PANEL='#182436';TEXT='#dce6f3';MUTED='#91a4bd';GREEN='#6cd9af';BLUE='#69b7ff'
 FEET_PER_METRE=3.280839895
@@ -11,6 +11,77 @@ AOA_TARGET_DEG=8.0
 ATTEMPT_COLORS=(('#69b7ff','#8dd8ff'),('#ff727c','#ffb2b8'),('#9f80ff','#f7a9e8'),('#ff9850','#ffe879'))
 MAX_COMPARE_ATTEMPTS=len(ATTEMPT_COLORS)
 START_END_COLOR='#c4a1ff'
+CURSOR_COLOR='#ff8c8c'
+
+def sample_at_distance(distance,time,values,target):
+    distance=np.asarray(distance);time=np.asarray(time)
+    values=np.asarray(values) if values is not None else np.full(len(time),np.nan)
+    valid=np.isfinite(distance)&np.isfinite(time)
+    candidates=[(float(time[i]),float(values[i])) for i in np.flatnonzero(valid&np.isclose(distance,target,rtol=0,atol=1e-9))]
+    for i in np.flatnonzero(valid[:-1]&valid[1:]&((distance[:-1]-target)*(distance[1:]-target)<0)):
+        fraction=(target-distance[i])/(distance[i+1]-distance[i])
+        candidates.append((float(time[i]+fraction*(time[i+1]-time[i])),float(values[i]+fraction*(values[i+1]-values[i]))))
+    return max(candidates,key=lambda item:item[0]) if candidates else None
+
+class ApproachCursor:
+    def __init__(self,canvas,toolbar,selected,jump):
+        self.canvas=canvas;self.toolbar=toolbar;self.selected=selected;self.jump=jump
+        self.distance=None;self.target=None;self.artists=[];self.stamp=None;self.timestamp=None;self.bottom=None;self.labelpad=None
+        canvas.mpl_connect('button_press_event',self.click)
+
+    def clear(self):
+        for artist in self.artists:
+            if artist.axes in self.canvas.figure.axes:artist.remove()
+        if self.bottom in self.canvas.figure.axes and self.labelpad is not None:self.bottom.xaxis.labelpad=self.labelpad
+        self.artists=[];self.stamp=None;self.timestamp=None;self.bottom=None
+
+    def refresh(self):
+        self.clear();attempt=self.selected()
+        identity=(attempt.entity_id,attempt.start,attempt.end,attempt.edit_id) if attempt is not None else None
+        if identity!=self.target:self.distance=None;self.target=identity
+        axes=[ax for ax in self.canvas.figure.axes if hasattr(ax,'_cursor_series')]
+        if self.distance is None or attempt is None or not axes:return
+        for ax in axes:
+            self.artists.append(ax.axvline(self.distance,color=CURSOR_COLOR,lw=1,zorder=20))
+            grouped={}
+            for label,unit,x,t,y in ax._cursor_series:
+                sample=sample_at_distance(x,t,y,self.distance)
+                value=f'{sample[1]:.1f}' if sample is not None and np.isfinite(sample[1]) else '—'
+                grouped.setdefault(label,[]).append(f'{value} {unit}')
+            readouts=[label+': '+' / '.join(values) for label,values in grouped.items()]
+            if readouts:
+                text=ax.text(.99,.98,'\n'.join(readouts),transform=ax.transAxes,ha='right',va='top',color=CURSOR_COLOR,
+                             fontsize=9,bbox=dict(facecolor=PANEL,edgecolor='none',alpha=.9,pad=2),zorder=21)
+                text.set_in_layout(False);self.artists.append(text)
+        sample=sample_at_distance(np.asarray(attempt.distance)/1852,attempt.time,None,self.distance)
+        self.timestamp=sample[0] if sample is not None else None
+        bottom=axes[-1];self.bottom=bottom;self.labelpad=bottom.xaxis.labelpad
+        timestamps=any('\n' in label.get_text() for label in bottom.get_xticklabels())
+        bottom.xaxis.labelpad=42 if timestamps else 30
+        self.stamp=bottom.annotate(clock(self.timestamp) if self.timestamp is not None else '—',
+            xy=(self.distance,0),xycoords=('data','axes fraction'),xytext=(0,-42 if timestamps else -30),
+            textcoords='offset points',ha='center',va='top',color=CURSOR_COLOR,fontsize=10,
+            bbox=dict(facecolor=BG,edgecolor='none',pad=1),zorder=22,annotation_clip=True)
+        self.artists.append(self.stamp)
+
+    def click(self,event):
+        if event.button!=1 or self.toolbar.mode:return
+        attempt=self.selected()
+        if attempt is None:return
+        if event.dblclick:
+            if self.stamp is not None and self.timestamp is not None and self.stamp.contains(event)[0]:
+                self.jump(attempt,self.timestamp);return
+            axes=[ax for ax in self.canvas.figure.axes if hasattr(ax,'_cursor_series')]
+            if axes:
+                for label in axes[-1].get_xticklabels():
+                    if '\n' in label.get_text() and label.contains(event)[0]:
+                        timestamp=latest_sample_time([attempt],label.get_position()[0])
+                        if timestamp is not None:self.jump(attempt,timestamp)
+                        return
+        if event.inaxes is None or event.xdata is None:return
+        self.distance=float(event.xdata)
+        self.target=(attempt.entity_id,attempt.start,attempt.end,attempt.edit_id)
+        self.refresh();self.canvas.draw_idle()
 
 class PairedLineKey(HandlerBase):
     """Stack speed and AoA swatches under one attempt label."""
@@ -67,7 +138,7 @@ def phase_values(nm,values,boundary,before):
                 else:xx.extend((boundary,boundary));yy.extend((np.nan,value))
     return np.asarray(xx),np.asarray(yy)
 
-def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None,black_box=None):
+def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None,black_box=None,black_box_metrics=None):
     attempts=list(attempt) if isinstance(attempt,(list,tuple)) else [attempt] if attempt is not None else []
     attempts=attempts[:MAX_COMPARE_ATTEMPTS];labels=labels or []
     comparing=len(attempts)>1
@@ -83,12 +154,13 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
     if not any(visible_graphs):
         fig.text(.5,.5,'Select a graph to display',color=MUTED,ha='center',va='center')
         return []
-    axes=fig.subplots(4 if visible_graphs[3] else 3,1,sharex=True)
-    attitude_ax=axes[3].twinx() if visible_graphs[3] else None
+    black_keys=[key for key in BLACK_BOX_METRICS if key in (black_box_metrics if black_box_metrics is not None else ('vertical_speed','bank','pitch'))]
+    axes=fig.subplots(3+max(1,len(black_keys)) if visible_graphs[3] else 3,1,sharex=True)
+    for ax in axes:ax._cursor_series=[]
     aoa_ax=axes[2].twinx()
     aoa_ax.set_zorder(axes[2].get_zorder()+1)
     aoa_ax.patch.set_visible(False)
-    for ax in list(axes)+[aoa_ax]+([attitude_ax] if attitude_ax is not None else []):
+    for ax in list(axes)+[aoa_ax]:
         ax.set_facecolor(PANEL);ax.tick_params(colors=MUTED,labelsize=9)
         ax.xaxis.label.set_color(MUTED);ax.yaxis.label.set_color(MUTED)
         for spine in ax.spines.values():spine.set_color('#344258')
@@ -164,6 +236,18 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         paired_keys.append((Line2D([],[],color=path_color,ls='--',lw=settings.graph_line_width),Line2D([],[],color=aoa_color,ls='-',lw=settings.graph_line_width)))
         d=np.asarray(attempt.distance);nm=d/1852;mask=(nm>=-.15)&(nm<=graph_range)
         altitude=attempt.world_altitude*FEET_PER_METRE if attempt.world_altitude is not None else np.full_like(d,np.nan)
+        expected=approach_reference(settings,d,origin_msl_ft)['center']*FEET_PER_METRE
+        glide_feet=altitude-expected
+        glide_degrees=np.degrees(np.arctan2((altitude-origin_msl_ft)/FEET_PER_METRE,d)-
+                                 np.arctan2((expected-origin_msl_ft)/FEET_PER_METRE,d))
+        loc_degrees=-np.degrees(np.arctan2(attempt.lateral,d))
+        glide_degrees[d<=0]=np.nan;loc_degrees[d<=0]=np.nan
+        prefix=label+' · ' if comparing else ''
+        for axis,name,unit,values in ((axes[0],'Alt','ft MSL',altitude),
+                                      (axes[0],'Offset','ft',glide_feet),(axes[0],'Offset','°',glide_degrees),
+                                      (axes[1],'Offset','ft',-attempt.lateral*FEET_PER_METRE),(axes[1],'Offset','°',loc_degrees),
+                                      (axes[2],'Speed','kt',attempt.groundspeed_knots),(axes[2],'AoA','°',attempt.aoa)):
+            axis._cursor_series.append((prefix+name,unit,nm,attempt.time,values))
         axes[0].plot(nm,altitude,color=path_color,lw=settings.graph_line_width,label=label)
         axes[1].plot(nm,-attempt.lateral*FEET_PER_METRE,color=path_color,lw=settings.graph_line_width,label=label if comparing else '_nolegend_')
         # Include the recorded post-carrier excursion in the vertical display.
@@ -224,19 +308,30 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
             fig.suptitle(attempt.player+' — '+attempt.aircraft+f' · Case {settings.recovery_case}',color=TEXT,fontsize=13,fontweight='bold')
     else:
         for ax in axes:ax.text(.5,.5,'Select a landing attempt',transform=ax.transAxes,ha='center',va='center',color=MUTED)
-    if attitude_ax is not None:
-        ax=axes[3];ax.set_title('Black Box',color=TEXT,loc='left',fontsize=11)
-        ax.set_ylabel('Vertical speed (ft/min)',color='#438cff');ax.tick_params(axis='y',colors='#438cff')
-        attitude_ax.set_ylabel('Pitch / bank (°)');attitude_ax.spines['right'].set_visible(True)
-        ax.axhline(0,color=MUTED,alpha=.4,lw=.7)
-        if black_box is not None:
-            x=black_box['distance'];handles=[]
-            for axis,key,label,color,style in ((ax,'vertical_speed','Vertical speed','#438cff','-'),
-                    (attitude_ax,'pitch','Pitch','#ffe879','--'),
-                    (attitude_ax,'bank','Bank','#ff727c','--')):
-                line,=axis.plot(x,black_box[key],color=color,ls=style,lw=settings.graph_line_width,label=label);handles.append(line)
-                if settings.show_data_points:axis.scatter(x,black_box[key],s=9,color=color)
-            if settings.show_graph_key:attitude_ax.legend(handles,[line.get_label() for line in handles],loc='lower left',facecolor=PANEL,edgecolor='#344258',labelcolor=TEXT,fontsize=8,ncol=2)
+    if visible_graphs[3]:
+        axes[3].set_title('Black Box',color=TEXT,loc='left',fontsize=11)
+        if not black_keys:axes[3].text(.5,.5,'Select a Black Box item',transform=axes[3].transAxes,ha='center',va='center',color=MUTED)
+        minimum_ranges={'speed':10,'aoa':4,'vertical_speed':200,'altitude':200,'bank':10,'pitch':10,'loc':10,'glide':10}
+        minimum_steps={'speed':1,'aoa':.5,'vertical_speed':50,'altitude':10,'bank':1,'pitch':1,'loc':1,'glide':1}
+        for ax,key in zip(axes[3:],black_keys):
+            label,unit,color=BLACK_BOX_METRICS[key]
+            ax.set_ylabel(label+'\n'+unit,color=color,fontsize=8)
+            ax.tick_params(axis='y',colors=color,labelsize=8)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+            if black_box is not None:
+                x=black_box['distance'];y=black_box[key]
+                valid=np.isfinite(x)&np.isfinite(y)
+                ax._cursor_series.append((label,unit,x[valid],black_box['time'][valid],y[valid]))
+                ax.plot(x[valid],y[valid],color=color,ls='--' if unit=='°' else '-',lw=settings.graph_line_width,label=label)
+                if settings.show_data_points:ax.scatter(x[valid],y[valid],s=9,color=color)
+                finite=np.asarray(y)[np.isfinite(y)]
+                if len(finite):
+                    center=(min(finite)+max(finite))/2;spread=max(minimum_ranges[key],np.ptp(finite)*1.1)
+                    ax.set_ylim(center-spread/2,center+spread/2)
+                    minimum=minimum_steps[key];target=max(minimum,spread/3)
+                    magnitude=10**np.floor(np.log10(target/minimum))
+                    step=next(factor*minimum*magnitude for factor in (1,2,2.5,5,10) if factor*minimum*magnitude>=target)
+                    ax.yaxis.set_major_locator(MultipleLocator(step))
     if intercept is not None and 0<=intercept<=graph_range:
         for ax in axes:
             ax.axvline(intercept,color=START_END_COLOR,alpha=settings.start_end_opacity,ls='--',lw=1.4,zorder=9)
@@ -256,16 +351,15 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         for text in axis.texts:
             text.set_in_layout(False);text.set_clip_on(True);text.set_clip_path(axis.patch)
     axes[-1].set_xlabel('Distance NM');axes[-1].set_xlim(graph_range,-.15)
-    visible_axes=[ax for index,ax in enumerate(axes) if visible_graphs[index]]
+    visible_axes=[ax for index,ax in enumerate(axes) if visible_graphs[min(index,3)]]
     layout=fig.add_gridspec(len(visible_axes),1)
     for row,ax in enumerate(visible_axes):
         ax.set_subplotspec(layout[row])
         ax.set_xlabel('Distance NM' if row==len(visible_axes)-1 else '')
         ax.tick_params(axis='x',labelbottom=row==len(visible_axes)-1)
         if ax is axes[2]:aoa_ax.set_subplotspec(layout[row])
-        if attitude_ax is not None and ax is axes[3]:attitude_ax.set_subplotspec(layout[row])
     for index,ax in enumerate(axes):
-        if not visible_graphs[index]:fig.delaxes(ax)
+        if not visible_graphs[min(index,3)]:fig.delaxes(ax)
     if not visible_graphs[2]:fig.delaxes(aoa_ax)
     if settings.show_timestamp and attempts and not comparing:
         bottom=visible_axes[-1]

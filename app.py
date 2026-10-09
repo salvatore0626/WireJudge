@@ -6,8 +6,8 @@ import json, os, queue, threading, tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from toolbar import GraphToolbar,DeferredFigureCanvasTkAgg
 from reader import read_motion
-from engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,target_intercept_nm,black_box_data
-from plots import make_figure,draw,BG,PANEL,TEXT,MUTED,GREEN,START_END_COLOR,ATTEMPT_COLORS,MAX_COMPARE_ATTEMPTS
+from engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,target_intercept_nm,black_box_data,BLACK_BOX_METRICS
+from plots import make_figure,draw,BG,PANEL,TEXT,MUTED,GREEN,START_END_COLOR,ATTEMPT_COLORS,MAX_COMPARE_ATTEMPTS,ApproachCursor
 from annotations import Annotations,WIRE_OPTIONS,replay_digest
 from attempt_edits import AttemptEdits
 from app_animations import ApplicationAnimations
@@ -71,7 +71,9 @@ class WireJudge(tk.Tk):
         
         self.update_input_buttons()
         brand=ttk.Frame(top);brand.pack(side='right')
-        ttk.Label(brand,image=self.header_logo).pack(side='left',padx=(0,8))
+        self.logo_label=ttk.Label(brand,image=self.header_logo,cursor='hand2')
+        self.logo_label.pack(side='left',padx=(0,8))
+        self.logo_label.bind('<Button-1>',lambda event:self.animations.trigger_ufo(from_logo=True))
         ttk.Label(brand,text=f'WIRE JUDGE V{APP_VERSION}',font=('Helvetica',16,'bold')).pack(side='left')
         self.content=ttk.Frame(self);self.content.pack(fill='both',expand=True,padx=16,pady=(0,8))
         self.carrier_selection=None
@@ -113,6 +115,7 @@ class WireJudge(tk.Tk):
         self.fig=make_figure();self.canvas=DeferredFigureCanvasTkAgg(self.fig,master=right);self.canvas.get_tk_widget().pack(fill='both',expand=True)
         graphbar=ttk.Frame(right);graphbar.pack(side='bottom',fill='x',before=self.canvas.get_tk_widget())
         self.toolbar=GraphToolbar(self.canvas,graphbar)
+        self.graph_cursor=ApproachCursor(self.canvas,self.toolbar,lambda:self.selected,self.jump_to_replay)
         self.data_points_btn=ttk.Button(self.toolbar,text='Data Points',command=lambda:(self.points_value.set(not self.points_value.get()),self.toggle_points()))
         self.data_points_btn.pack(side='left',padx=(0,6))
         def update_data_points_style(*_):self.data_points_btn.configure(style='Selected.TButton' if self.points_value.get() else 'TButton')
@@ -127,6 +130,12 @@ class WireJudge(tk.Tk):
         for button in reversed(self.graph_buttons):button.pack(side='right',padx=3)
         self.black_box_btn=ttk.Button(graph_toggles,text='Black Box',style='HiddenGraph.TButton',command=lambda:self.toggle_graph(3))
         self.black_box_btn.pack(side='right',padx=3);self.graph_buttons.append(self.black_box_btn)
+        self.black_box_metrics={key:tk.BooleanVar(value=key in ('vertical_speed','bank','pitch')) for key in BLACK_BOX_METRICS}
+        self.black_box_selector=ttk.Menubutton(graph_toggles,text='Black Box Items ▾')
+        menu=tk.Menu(self.black_box_selector,tearoff=False,background=PANEL,foreground=TEXT)
+        for key,(label,unit,color) in BLACK_BOX_METRICS.items():
+            menu.add_checkbutton(label=label,variable=self.black_box_metrics[key],command=self.redraw)
+        self.black_box_selector.configure(menu=menu)
         self.toolbar.pack(side='left')
         self.status=tk.StringVar()
         self.build_settings();self.pages.bind('<<NotebookTabChanged>>',self.page_changed)
@@ -334,10 +343,20 @@ class WireJudge(tk.Tk):
     def open_player_editor(self,event=None):
         if self.busy or self.carrier is None:return 'break'
         row=self.tree.identify_row(event.y) if event is not None else self.tree.focus()
+        attempt=self.row_attempts.get(row)
+        if attempt is not None:
+            self.pages.select(self.replay_map)
+            self.replay_map.open_attempt(attempt.entity_id,attempt.start)
+            return 'break'
         player=self.row_players.get(row)
         if player:
             self.pages.select(self.editor_page);self.editor_page.select_player(player)
         return 'break'
+
+    def jump_to_replay(self,attempt,timestamp):
+        if self.busy or self.carrier is None:return
+        self.pages.select(self.replay_map)
+        self.replay_map.open_attempt(attempt.entity_id,timestamp)
 
     def toggle_points(self):
         self.settings.show_data_points=self.points_value.get()
@@ -405,18 +424,21 @@ class WireJudge(tk.Tk):
         comparing=len(compared)>1
         if comparing:self.graph_visibility[3]=False
         self.black_box_btn.configure(state='disabled' if comparing else 'normal',style='Selected.TButton' if self.graph_visibility[3] else 'HiddenGraph.TButton')
+        if self.graph_visibility[3]:self.black_box_selector.pack(side='right',padx=3)
+        else:self.black_box_selector.pack_forget()
         diagnostics=None
         if self.graph_visibility[3] and a is not None:
             track=next((track for track in self.tracks if track['id']==a.entity_id),None)
-            if track is not None:diagnostics=black_box_data(track,a)
+            if track is not None:diagnostics=black_box_data(track,a,self.carrier,self.settings)
         if preserve_view:self.toolbar.update()
         else:self.toolbar.new_graph()
-        draw(self.fig,compared if compared else a,self.settings,origin,labels=labels,visible_graphs=self.graph_visibility,black_box=diagnostics)
+        draw(self.fig,compared if compared else a,self.settings,origin,labels=labels,visible_graphs=self.graph_visibility,black_box=diagnostics,
+             black_box_metrics=[key for key,variable in self.black_box_metrics.items() if variable.get()])
         if view:
             self.toolbar.push_current()
             for axis,(xlim,ylim) in zip(self.fig.axes,view):axis.set_xlim(xlim);axis.set_ylim(ylim)
             self.toolbar.push_current()
-        self.canvas.draw_idle()
+        self.graph_cursor.refresh();self.canvas.draw_idle()
 
     def get_wire(self,attempt):
         if attempt is None:return ''

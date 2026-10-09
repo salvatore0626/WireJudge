@@ -15,7 +15,7 @@ from carrier_stencil import draw_carrier_stencil
 from editor import draw_localizer_reference
 from engine import clean_rows,interpolate_quaternions,rotate,inverse,player_label,clock,glide_origin_msl_ft,velocity_from_positions
 from reader import quaternion_candidate
-from plots import BG,PANEL,TEXT,MUTED
+from plots import BG,PANEL,TEXT,MUTED,CURSOR_COLOR
 from toolbar import DeferredFigureCanvasTkAgg
 from replay_trails import trail_segments,trail_colors
 from replay_render import ReplayRenderer
@@ -141,10 +141,12 @@ class ReplayMapPage(ttk.Frame):
         super().__init__(parent);self.app=app;self.active=False;self.playing=False
         self.speed=1;self.cursor=0.;self.start=0.;self.end=0.;self.data=[]
         self.signature=None;self.settings_signature=None;self.generation=0;self.loading=False
+        self.pending_attempt=None
         self.glide_visible=False;self.glide_occupied=False;self.glide_flash=False;self.glide_blink_job=None
         self.results=queue.Queue();self.play_job=None;self.poll_job=None
         self.center=np.array([0.,0.]);self.radius=2.;self.drag=None;self.follow=False
         self.members={};self.groups={};self.row_members={};self.member_rows={};self.colors={}
+        self.missile_inspect_points=[]
         body=ttk.Panedwindow(self,orient='horizontal');body.pack(fill='both',expand=True,padx=12,pady=8)
         left=ttk.Frame(body,padding=(0,0,12,0));right=ttk.Frame(body)
         body.add(left,weight=1);body.add(right,weight=4)
@@ -178,12 +180,16 @@ class ReplayMapPage(ttk.Frame):
         self.trail_length=tk.StringVar(value=next((label for label,seconds in TRAIL_LENGTHS.items() if seconds==app.settings.replay_trail_length_sec),'3 min'))
         self.trail_selector=ttk.Combobox(controls,textvariable=self.trail_length,values=tuple(TRAIL_LENGTHS),state='readonly',width=7)
         self.trail_selector.pack(side='left');self.trail_selector.bind('<<ComboboxSelected>>',self.change_trail_length)
-        self.clock_value=tk.StringVar(value=clock(0));ttk.Label(controls,textvariable=self.clock_value).pack(side='right',padx=8)
+        self.clock_value=tk.StringVar(value=clock(0))
         timeline=ttk.Frame(right);timeline.pack(fill='x',pady=(0,6))
         self.start_label=ttk.Label(timeline,text=clock(0));self.start_label.pack(side='left',padx=(0,8))
         self.time_value=tk.DoubleVar(value=0)
-        self.timeline=ttk.Scale(timeline,from_=0,to=1,orient='horizontal',variable=self.time_value,command=self.seek,state='disabled')
-        self.timeline.pack(side='left',fill='x',expand=True)
+        timeline_track=ttk.Frame(timeline);timeline_track.pack(side='left',fill='x',expand=True)
+        self.timeline=ttk.Scale(timeline_track,from_=0,to=1,orient='horizontal',variable=self.time_value,command=self.seek,state='disabled')
+        self.timeline.pack(fill='x')
+        self.timestamp_bar=ttk.Frame(timeline_track,height=22);self.timestamp_bar.pack(fill='x')
+        self.current_timestamp=ttk.Label(self.timestamp_bar,textvariable=self.clock_value,foreground=CURSOR_COLOR,font=('Helvetica',9))
+        self.timestamp_bar.bind('<Configure>',lambda event:self.layout_timestamp())
         self.timeline.bind('<Button-1>',self.scrub);self.timeline.bind('<B1-Motion>',self.scrub)
         self.end_label=ttk.Label(timeline,text=clock(0));self.end_label.pack(side='right',padx=(8,0))
         self.message=tk.StringVar(value='Select a replay and carrier to view playback.')
@@ -221,6 +227,7 @@ class ReplayMapPage(ttk.Frame):
     def refresh(self):
         signature=(id(self.app.tracks),id(self.app.carrier))
         if signature!=self.signature:
+            self.pending_attempt=None
             self.signature=signature;self.generation+=1;self.loading=False;self.pause();self.data=[]
             self.tree.delete(*self.tree.get_children());self.play_btn.configure(state='disabled');self.timeline.configure(state='disabled')
             self.center=np.array([0.,0.]);self.radius=2.;self.cursor=0
@@ -251,13 +258,30 @@ class ReplayMapPage(ttk.Frame):
                     self.cursor=float(self.start);self.timeline.configure(from_=self.start,to=self.end,state='normal')
                     self.start_label.configure(text=clock(self.start));self.end_label.configure(text=clock(self.end))
                     self.play_btn.configure(state='normal');self.populate();self.build_map()
+                    self.focus_pending_attempt()
                 return
         except queue.Empty:
             if self.loading:self.poll_job=self.after(80,self.poll_results)
 
+    def open_attempt(self,entity_id,start):
+        self.refresh();self.pause()
+        self.pending_attempt=(entity_id,start)
+        if not self.loading:self.focus_pending_attempt()
+
+    def focus_pending_attempt(self):
+        if self.pending_attempt is None:return
+        entity_id,start=self.pending_attempt;self.pending_attempt=None
+        data=next((d for d in self.data if d['entity']==entity_id and d.get('inspect_key') is not None and d['time'][0]<=start<=d['time'][-1]),None)
+        if data is None:return
+        self.set_follow(True)
+        self.seek(start)
+        self.select_aircraft(data['inspect_key'],center=True)
+
     def populate(self):
         self.members={};self.groups=defaultdict(list);self.row_members={};self.member_rows={}
         for data in self.data:
+            if data['category']=='missile':
+                data['inspect_key']=('missile',data['entity']);continue
             if data['category']=='enemy':
                 data['inspect_key']=('enemy',data['entity']);continue
             if data['category']!='friendly':continue
@@ -284,16 +308,32 @@ class ReplayMapPage(ttk.Frame):
         if enemies:
             self.tree.insert('','end',iid='enemies',text='Enemy Aircraft',open=True)
             for data in enemies:self.tree.insert('enemies','end',iid=f"enemy:{data['entity']}",text=data['callsign'])
+        aircraft_ids={data['entity'] for data in self.data if data['category'] in ('friendly','enemy')}
+        missiles=[data for data in self.data if data['category']=='missile' and data.get('source') in aircraft_ids]
+        if missiles:
+            self.tree.insert('','end',iid='missiles',text='Air-to-Air Missiles',open=False)
+            for data in missiles:self.tree.insert('missiles','end',iid=f"missile:{data['entity']}",text=data['track']['name'])
 
     def inspect_selection(self,event=None):
         rows=self.tree.selection()
         if not rows:return
         row=rows[0]
         keys=self.row_members.get(row,[])
-        key=keys[0] if row.startswith('member:') and keys else ('enemy',int(row.split(':')[1])) if row.startswith('enemy:') else None
+        key=keys[0] if row.startswith('member:') and keys else (row.split(':')[0],int(row.split(':')[1])) if row.startswith(('enemy:','missile:')) else None
         if key is not None and key!=self.inspector.selected:self.select_aircraft(key,center=True)
 
     def select_aircraft(self,key,center=False):
+        if key[0]=='missile':
+            missile=next((d for d in self.data if d.get('inspect_key')==key),None)
+            if missile is not None:
+                self.missile_layers['air_to_air']=True
+                self.missile_buttons['air_to_air'].configure(style='Selected.TButton')
+                source=next((d for d in self.data if d['entity']==missile.get('source')),None)
+                if source is not None:
+                    if source['category']=='enemy':
+                        self.enemy_visible=True;self.enemy_btn.configure(style='Selected.TButton')
+                    elif source.get('member') in self.members:
+                        self.members[source['member']]=True;self.update_tree()
         if key[0]=='enemy':
             self.enemy_visible=True
             self.enemy_btn.configure(style='Selected.TButton')
@@ -301,7 +341,7 @@ class ReplayMapPage(ttk.Frame):
             self.members[key]=True
             self.update_tree()
         self.inspector.select(key)
-        row=f'enemy:{key[1]}' if key[0]=='enemy' else self.member_rows.get(key)
+        row=f'{key[0]}:{key[1]}' if key[0] in ('enemy','missile') else self.member_rows.get(key)
         if row and self.tree.exists(row):
             self.tree.selection_set(row);self.tree.focus(row);self.tree.see(row)
         if center:
@@ -325,8 +365,8 @@ class ReplayMapPage(ttk.Frame):
         row=self.tree.identify_row(event.y)
         if row and (row.startswith('group:') or self.tree.identify_column(event.x)=='#1'):
             self.tree.focus(row);self.toggle_row(row);return 'break'
-        if row.startswith(('member:','enemy:')):
-            key=self.row_members[row][0] if row.startswith('member:') else ('enemy',int(row.split(':')[1]))
+        if row.startswith(('member:','enemy:','missile:')):
+            key=self.row_members[row][0] if row.startswith('member:') else (row.split(':')[0],int(row.split(':')[1]))
             self.select_aircraft(key,center=True);return 'break'
 
     def toggle_row(self,row):
@@ -430,9 +470,10 @@ class ReplayMapPage(ttk.Frame):
 
     def update_frame(self):
         self.update_carrier_marker()
-        self.clock_value.set(clock(self.cursor));self.time_value.set(self.cursor)
+        self.clock_value.set(clock(self.cursor));self.time_value.set(self.cursor);self.layout_timestamp()
         length=self.app.settings.replay_trail_length_sec;fade=self.app.settings.replay_trail_fade_sec
         missile_points=[];missile_lines=[];missile_colors=[];bullet_points=[];bursts=[]
+        self.missile_inspect_points=[]
         # Suppress tiny rounds when a 20 m reference occupies less than one pixel.
         bullets_in_view=20/(2*self.radius*1852/max(self.map.bbox.height,1))>=1
         self.selection_horizontal.set_visible(False);self.selection_vertical.set_visible(False)
@@ -467,6 +508,8 @@ class ReplayMapPage(ttk.Frame):
                 if active and visible:
                     x=float(np.interp(self.cursor,t,data['x']));y=float(np.interp(self.cursor,t,data['y']))
                     missile_points.append((x,y))
+                    self.missile_inspect_points.append((data,x,y))
+                    self.highlight_selection(data,x,y)
                 continue
             enabled=self.enemy_visible if data['category']=='enemy' else self.members.get(data['member'],True)
             color=ENEMY_COLOR if data['category']=='enemy' else self.colors[data['flight']]
@@ -481,10 +524,7 @@ class ReplayMapPage(ttk.Frame):
                 outline=approach_outline(self.app.settings,x,y,data['speed'][before],aoa)
                 if outline is not None:
                     data['marker'].set_markeredgecolor(outline);data['marker'].set_markeredgewidth(2)
-                if data.get('inspect_key')==self.inspector.selected:
-                    self.selection_horizontal.set_ydata([y,y]);self.selection_horizontal.set_visible(True)
-                    self.selection_vertical.set_xdata([x,x]);self.selection_vertical.set_visible(True)
-                    if self.follow:self.center=np.array([x,y]);self.sync_limits()
+                self.highlight_selection(data,x,y)
             else:data['marker'].set_data([],[]);data['label'].set_visible(False)
             data['line'].set_visible(enabled)
             if enabled:
@@ -582,6 +622,18 @@ class ReplayMapPage(ttk.Frame):
                                      (event.y-y)*2*self.radius/max(self.map.bbox.height,1)])
         self.sync_limits();self.canvas.draw_idle()
 
+    def highlight_selection(self,data,x,y):
+        if data.get('inspect_key')!=self.inspector.selected:return
+        self.selection_horizontal.set_ydata([y,y]);self.selection_horizontal.set_visible(True)
+        self.selection_vertical.set_xdata([x,x]);self.selection_vertical.set_visible(True)
+        if self.follow:self.center=np.array([x,y]);self.sync_limits()
+
+    def layout_timestamp(self):
+        width=max(self.timestamp_bar.winfo_width(),1);half=self.current_timestamp.winfo_reqwidth()/2
+        fraction=np.clip((self.cursor-self.start)/max(self.end-self.start,1e-9),0,1)
+        x=np.clip(10+fraction*max(width-20,0),min(half,width/2),max(width-half,width/2))
+        self.current_timestamp.place(x=x,y=1,anchor='n')
+
     def release(self,event):
         drag=self.drag;self.drag=None
         if drag is None or event.inaxes is not self.map or event.x is None or event.y is None:return
@@ -592,6 +644,9 @@ class ReplayMapPage(ttk.Frame):
             x,y=data['marker'].get_data()
             if not len(x):continue
             px,py=self.map.transData.transform((x[0],y[0]));gap=np.hypot(event.x-px,event.y-py)
+            if gap<distance:closest=data;distance=gap
+        for data,x,y in self.missile_inspect_points:
+            px,py=self.map.transData.transform((x,y));gap=np.hypot(event.x-px,event.y-py)
             if gap<distance:closest=data;distance=gap
         if closest is not None:self.select_aircraft(closest['inspect_key'])
 

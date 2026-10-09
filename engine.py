@@ -224,17 +224,23 @@ def interpolate_quaternions(times, q, target):
     return result/np.linalg.norm(result,axis=1,keepdims=True)
 
 
-def velocity_from_positions(rows,max_gap=3):
+def velocity_from_positions(rows,max_gap=3,max_speed=650):
     t=rows[:,0];v=np.column_stack([np.gradient(rows[:,j],t) for j in (1,2,3)])
     dt=np.diff(t);interval_speed=np.linalg.norm(np.diff(rows[:,1:4],axis=0),axis=1)/dt
-    bad=(dt>max_gap)|(interval_speed>650)
+    bad=(dt>max_gap)|(interval_speed>max_speed)
     invalid=np.r_[bad,False]|np.r_[False,bad]
     v[invalid]=np.nan
     return v
 
-def black_box_data(track,attempt):
+BLACK_BOX_METRICS={'speed':('Speed','kt','#69b7ff'), 'aoa':('AoA','°','#8dd8ff'),
+                   'vertical_speed':('Vertical Speed','ft/min','#438cff'), 'altitude':('Altitude','ft MSL','#d5b28a'),
+                   'bank':('Bank','°','#ff727c'), 'pitch':('Pitch','°','#ffe879'),
+                   'loc':('Loc Offset','°','#ff9850'), 'glide':('Glide Offset','°','#b491ff')}
+
+def black_box_data(track,attempt,carrier=None,settings=None):
     """Motion diagnostics; attitude uses the existing candidate rotation decoder."""
-    rows=clean_rows(track['rows']);velocity=velocity_from_positions(rows)
+    settings=settings or Settings()
+    rows=clean_rows(track['rows']);velocity=velocity_from_positions(rows,max_gap=np.inf)
     q=quaternion_candidate(rows[:,7])
     forward=rotate(q,np.broadcast_to([0.,0.,1.],(len(rows),3)))
     right=rotate(q,np.broadcast_to([1.,0.,0.],(len(rows),3)))
@@ -242,7 +248,19 @@ def black_box_data(track,attempt):
     horizontal=np.linalg.norm(velocity[:,[0,2]],axis=1)
     angle=np.degrees(np.arctan2(velocity[:,1],horizontal));angle[horizontal<5]=np.nan
     keep=(rows[:,0]>=attempt.start)&(rows[:,0]<=attempt.end)
-    return dict(distance=np.interp(rows[keep,0],attempt.time,attempt.distance)/1852,
+    distance=np.interp(rows[keep,0],attempt.time,attempt.distance)
+    lateral=np.interp(rows[keep,0],attempt.time,attempt.lateral)
+    body=rotate(inverse(q),velocity-np.array([settings.wind_x,settings.wind_y,settings.wind_z]))
+    aoa=np.degrees(np.arctan2(-body[:,1],body[:,2]))
+    aoa[(np.linalg.norm(body,axis=1)<25)|(body[:,2]<10)]=np.nan
+    origin=glide_origin_msl_ft(carrier,settings)
+    reference=approach_reference(settings,distance,origin)
+    glide=np.degrees(np.arctan2(rows[keep,2]-origin/3.280839895,distance)-
+                     np.arctan2(reference['center']-origin/3.280839895,distance))
+    loc=-np.degrees(np.arctan2(lateral,distance))
+    glide[distance<=0]=np.nan;loc[distance<=0]=np.nan
+    return dict(time=rows[keep,0],distance=distance/1852,speed=horizontal[keep]*3600/1852,aoa=aoa[keep],
+                altitude=rows[keep,2]*3.280839895,loc=loc,glide=glide,
                 vertical_speed=velocity[keep,1]*3.280839895*60,
                 flight_path=angle[keep],pitch=np.degrees(np.arcsin(np.clip(forward[keep,1],-1,1))),
                 bank=np.degrees(np.arctan2(-right[keep,1],up[keep,1])))
