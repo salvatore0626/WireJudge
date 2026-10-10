@@ -2,6 +2,7 @@
 import ctypes
 import ctypes.util
 import sys
+import platform
 import tkinter as tk
 import numpy as np
 from PIL import ImageTk
@@ -10,6 +11,9 @@ from plots import BG
 class AnimationOverlay:
     def __init__(self,app,parent):
         self.app=app;self.parent=parent;self.photo=None
+        # Cocoa owns its pixels directly; do not put a Tk canvas behind them.
+        if sys.platform=='darwin':
+            self.setup_mac();return
         self.window=tk.Toplevel(parent);self.window.withdraw();self.window.overrideredirect(True)
         self.window.title(f'Wire Judge Animation Layer {id(self)}')
         self.canvas=tk.Canvas(self.window,bg=BG,highlightthickness=0,borderwidth=0,takefocus=False)
@@ -17,7 +21,6 @@ class AnimationOverlay:
         self.window.update_idletasks()
         self.native=int(self.window.tk.call('wm','frame',str(self.window)),0)
         if sys.platform=='win32':self.setup_windows()
-        elif sys.platform=='darwin':self.setup_mac()
         else:self.setup_x11()
 
     def setup_windows(self):
@@ -42,24 +45,98 @@ class AnimationOverlay:
         self.user.SetWindowLongW(self.native,-20,style|0x80000|0x20|0x8000000|0x80)
 
     def setup_mac(self):
-        self.window.attributes('-transparent',True);self.window.configure(bg='systemTransparent')
-        self.canvas.configure(bg='systemTransparent')
-        objc=ctypes.CDLL(ctypes.util.find_library('objc'))
+        # Tk's transparent Canvas can accumulate old frames on macOS. A native
+        # layer replaces the entire RGBA image, including transparent pixels.
+        self.mac_window=None;self.mac_bitmap=None;self.mac_parent=None
+        self.mac_appkit=ctypes.CDLL('/System/Library/Frameworks/AppKit.framework/AppKit')
+        self.mac_quartz=ctypes.CDLL('/System/Library/Frameworks/QuartzCore.framework/QuartzCore')
+        objc=self.mac_objc=ctypes.CDLL(ctypes.util.find_library('objc'))
         objc.objc_getClass.argtypes=[ctypes.c_char_p];objc.objc_getClass.restype=ctypes.c_void_p
         objc.sel_registerName.argtypes=[ctypes.c_char_p];objc.sel_registerName.restype=ctypes.c_void_p
+        class Point(ctypes.Structure):_fields_=[('x',ctypes.c_double),('y',ctypes.c_double)]
+        class Size(ctypes.Structure):_fields_=[('width',ctypes.c_double),('height',ctypes.c_double)]
+        class Rect(ctypes.Structure):_fields_=[('origin',Point),('size',Size)]
+        self.MacRect=Rect
         def send(obj,selector,result=ctypes.c_void_p,args=(),values=()):
             fn=ctypes.CFUNCTYPE(result,ctypes.c_void_p,ctypes.c_void_p,*args)(('objc_msgSend',objc))
             return fn(obj,objc.sel_registerName(selector.encode()),*values)
+        self.mac_send=send
+        def frame(obj):
+            # Intel returns a 32-byte NSRect through objc_msgSend_stret; Apple
+            # Silicon uses the normal message entry point for this structure.
+            if platform.machine().lower() in ('x86_64','amd64'):
+                value=Rect()
+                fn=ctypes.CFUNCTYPE(None,ctypes.POINTER(Rect),ctypes.c_void_p,ctypes.c_void_p)(('objc_msgSend_stret',objc))
+                fn(ctypes.byref(value),obj,objc.sel_registerName(b'frame'));return value
+            return send(obj,'frame',Rect)
+        self.mac_frame=frame
+        self.parent.update_idletasks()
         nsapp=send(objc.objc_getClass(b'NSApplication'),'sharedApplication');windows=send(nsapp,'windows')
         count=send(windows,'count',ctypes.c_ulong)
         for index in range(count):
             window=send(windows,'objectAtIndex:',args=(ctypes.c_ulong,),values=(index,))
             title=send(send(window,'title'),'UTF8String',ctypes.c_char_p)
-            if title and title.decode()==self.window.title():
-                for selector in ('setIgnoresMouseEvents:','setHasShadow:'):
-                    send(window,selector,None,(ctypes.c_bool,),(selector=='setIgnoresMouseEvents:',))
+            if title and title.decode()==self.parent.title():
+                self.mac_parent=window
                 break
-        else:raise RuntimeError('Could not find the transparent animation window.')
+        if not self.mac_parent:raise RuntimeError('Could not find the animation parent window.')
+        window=send(send(objc.objc_getClass(b'NSWindow'),'alloc'),
+                    'initWithContentRect:styleMask:backing:defer:',
+                    args=(Rect,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_bool),
+                    values=(Rect(Point(0,0),Size(1,1)),0,2,False))
+        if not window:raise RuntimeError('Could not create the animation window.')
+        self.mac_window=window;self.mac_visible=False
+        for selector,value in (('setOpaque:',False),('setHasShadow:',False),
+                               ('setIgnoresMouseEvents:',True),('setReleasedWhenClosed:',False)):
+            send(window,selector,None,(ctypes.c_bool,),(value,))
+        color=send(objc.objc_getClass(b'NSColor'),'clearColor')
+        send(window,'setBackgroundColor:',None,(ctypes.c_void_p,),(color,))
+        view=send(window,'contentView')
+        # Host our own layer so AppKit never paints a backing view over it.
+        self.mac_layer=send(objc.objc_getClass(b'CALayer'),'layer')
+        send(view,'setLayer:',None,(ctypes.c_void_p,),(self.mac_layer,))
+        send(view,'setWantsLayer:',None,(ctypes.c_bool,),(True,))
+        send(self.mac_layer,'setOpaque:',None,(ctypes.c_bool,),(False,))
+        self.mac_transaction=objc.objc_getClass(b'CATransaction')
+
+    def draw_mac(self,image,x,y):
+        send=self.mac_send;objc=self.mac_objc;width,height=image.size
+        pool=send(send(objc.objc_getClass(b'NSAutoreleasePool'),'alloc'),'init')
+        bitmap=None
+        try:
+            # Tk's desktop origin is at the primary screen's top left; Cocoa's
+            # is at its bottom left, even with additional monitors attached.
+            screens=send(objc.objc_getClass(b'NSScreen'),'screens')
+            screen=send(screens,'objectAtIndex:',args=(ctypes.c_ulong,),values=(0,))
+            frame=self.mac_frame(screen)
+            rect=self.MacRect();rect.origin.x=x;rect.origin.y=frame.origin.y+frame.size.height-y-height
+            rect.size.width=width;rect.size.height=height
+            send(self.mac_window,'setFrame:display:',None,(self.MacRect,ctypes.c_bool),(rect,False))
+            pixels=np.ascontiguousarray(image.convert('RGBA'),dtype=np.uint8)
+            name=send(objc.objc_getClass(b'NSString'),'stringWithUTF8String:',args=(ctypes.c_char_p,),values=(b'NSDeviceRGBColorSpace',))
+            bitmap=send(send(objc.objc_getClass(b'NSBitmapImageRep'),'alloc'),
+                        'initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bitmapFormat:bytesPerRow:bitsPerPixel:',
+                        args=(ctypes.c_void_p,ctypes.c_long,ctypes.c_long,ctypes.c_long,ctypes.c_long,
+                              ctypes.c_bool,ctypes.c_bool,ctypes.c_void_p,ctypes.c_ulong,ctypes.c_long,ctypes.c_long),
+                        values=(None,width,height,8,4,True,False,name,2,width*4,32))
+            if not bitmap:raise RuntimeError('Could not create the animation frame.')
+            ctypes.memmove(send(bitmap,'bitmapData'),pixels.ctypes.data,pixels.nbytes)
+            # Format 2 is non-premultiplied RGBA, matching the renderer's PIL image.
+            send(self.mac_transaction,'begin',None)
+            try:
+                send(self.mac_transaction,'setDisableActions:',None,(ctypes.c_bool,),(True,))
+                layer_rect=self.MacRect();layer_rect.size.width=width;layer_rect.size.height=height
+                send(self.mac_layer,'setFrame:',None,(self.MacRect,),(layer_rect,))
+                send(self.mac_layer,'setContents:',None,(ctypes.c_void_p,),(send(bitmap,'CGImage'),))
+            finally:send(self.mac_transaction,'commit',None)
+            previous=self.mac_bitmap;self.mac_bitmap=bitmap;bitmap=None
+            if previous:send(previous,'release',None)
+            if not self.mac_visible:
+                send(self.mac_parent,'addChildWindow:ordered:',None,(ctypes.c_void_p,ctypes.c_long),(self.mac_window,1))
+                send(self.mac_window,'orderFront:',None,(ctypes.c_void_p,),(None,));self.mac_visible=True
+        finally:
+            if bitmap:send(bitmap,'release',None)
+            send(pool,'drain',None)
 
     def setup_x11(self):
         self.window.attributes('-type','tooltip')
@@ -75,6 +152,8 @@ class AnimationOverlay:
         self.shape.XShapeCombineRectangles(self.display,self.native,2,0,0,None,0,0,0)
 
     def draw(self,image,x,y):
+        if sys.platform=='darwin':
+            self.draw_mac(image,x,y);return
         width,height=image.size;self.window.geometry(f'{width}x{height}+{x}+{y}')
         if sys.platform=='win32':
             pixels=np.asarray(image,dtype=np.uint8);alpha=pixels[:,:,3:4].astype(np.uint16)
@@ -102,6 +181,15 @@ class AnimationOverlay:
             self.window.deiconify();self.window.lift(self.parent)
 
     def close(self):
+        if getattr(self,'mac_window',None):
+            send=self.mac_send
+            if self.mac_visible:send(self.mac_parent,'removeChildWindow:',None,(ctypes.c_void_p,),(self.mac_window,))
+            send(self.mac_window,'orderOut:',None,(ctypes.c_void_p,),(None,))
+            send(self.mac_layer,'setContents:',None,(ctypes.c_void_p,),(None,))
+            if self.mac_bitmap:send(self.mac_bitmap,'release',None);self.mac_bitmap=None
+            send(self.mac_window,'close',None);send(self.mac_window,'release',None)
+            self.mac_window=None;return
+        if not hasattr(self,'window'):return
         try:
             if self.window.winfo_exists():self.window.destroy()
         except tk.TclError:pass

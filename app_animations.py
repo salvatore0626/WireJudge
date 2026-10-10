@@ -15,17 +15,23 @@ from replay_style import (PALETTE,ENEMY_COLOR,AIRCRAFT_SIZE,AIRCRAFT_TRAIL_WIDTH
                           MISSILE_COLOR,MISSILE_TRAIL_WIDTH,aircraft_marker,
                           missile_color,missile_size,missile_path,update_explosions)
 from animation_overlay import AnimationOverlay
+from sound_effects import SoundEffects
 
 class AircraftScene:
     def __init__(self,width,height,kind=None):
         self.width=width;self.height=height;self.kind=kind or random.choice(('formation','joinup','fight'))
         self.lasers=[];self.laser_hits=[]
         if self.kind=='ufo':
-            self.build_ufo();self.ensure_offscreen();self.finish_paths();return
+            self.build_ufo();self.ensure_offscreen();self.finish_paths()
+            route=self.actors[4]['path']
+            visible=(route[:,0]>=0)&(route[:,0]<=self.width)&(route[:,1]>=0)&(route[:,1]<=self.height)
+            self.ufo_arrival_time=float(self.times[np.flatnonzero(visible)[0]])
+            self.ufo_jump_time+=self.entry_delay
+            return
         if self.kind=='kiss_off':
             self.build_kiss_off()
             self.ensure_offscreen();self.finish_paths();return
-        formation_scene=self.kind in ('formation','joinup','breakaway','solo','enemy')
+        formation_scene=self.kind in ('formation','joinup','joinup_wide','joinup_cross','breakaway','solo','enemy')
         speed=random.uniform(65,80) if formation_scene else random.uniform(36,46)
         self.duration=max(width,height)/speed+12;self.times=np.arange(0,self.duration+.1,.05)
         self.color=random.choice(PALETTE);self.actors=[];self.missiles=[]
@@ -34,9 +40,11 @@ class AircraftScene:
         center=np.array((width/2,height/2),dtype=float)
         lead=self.curve(angle,speed,self.turn)
         lead+=center-lead[len(lead)//2]
-        if self.kind in ('formation','joinup','breakaway','solo','enemy'):
-            count=1 if self.kind in ('solo','enemy') else random.randint(2,4)
-            formation=random.choice(('chevron','left','right'));self.formation=formation
+        if self.kind in ('formation','joinup','joinup_wide','joinup_cross','breakaway','solo','enemy'):
+            count=1 if self.kind in ('solo','enemy') else random.randint(3,4) if self.kind in ('joinup_wide','joinup_cross') else random.randint(2,4)
+            formation='chevron' if self.kind=='joinup_cross' else random.choice(('left','right')) if self.kind=='joinup_wide' else random.choice(('chevron','left','right'));self.formation=formation
+            join_time=self.times[len(lead)//2]+random.uniform(-.4,.4)
+            join_degrees=random.uniform(55,70) if self.kind=='joinup_cross' else random.uniform(50,65) if self.kind=='joinup_wide' else random.uniform(25,40)
             derivative=np.gradient(lead,axis=0);directions=derivative/np.linalg.norm(derivative,axis=1)[:,None]
             right=np.column_stack((-directions[:,1],directions[:,0]))
             for i in range(count):
@@ -44,13 +52,16 @@ class AircraftScene:
                 lateral=(1 if i%2 else -1)*rank*25 if formation=='chevron' else i*25*(1 if formation=='right' else -1)
                 along=-rank*30 if formation=='chevron' else -i*30
                 offsets=np.tile((along,lateral),(len(self.times),1)).astype(float)
-                if i and self.kind=='joinup':
-                    blend=self.smooth(np.clip((self.times-random.uniform(1,2))/random.uniform(4,7),0,1))
-                    initial=np.array((along-random.uniform(70,180),lateral+random.choice((-1,1))*random.uniform(100,220)))
-                    offsets=initial[None,:]*(1-blend[:,None])+offsets*blend[:,None]
                 path=lead+directions*offsets[:,0,None]+right*offsets[:,1,None]
-                self.actors.append(dict(path=path,color=ENEMY_COLOR if self.kind=='enemy' else self.color,team='friendly',death=float('inf')))
-            if count>1 and (self.kind=='breakaway' or random.random()<.35):
+                actor=dict(path=path,color=ENEMY_COLOR if self.kind=='enemy' else self.color,team='friendly',death=float('inf'))
+                if i and self.kind in ('joinup','joinup_wide','joinup_cross'):
+                    # Approach from the same side as the assigned formation slot,
+                    # keeping wingmen from crossing through the lead or each other.
+                    side=-1 if lateral>0 else 1
+                    actor['path']=self.join_route(path,join_time,side*join_degrees)
+                    actor['join_time']=join_time
+                self.actors.append(actor)
+            if count>1 and (self.kind=='breakaway' or self.kind=='formation' and random.random()<.35):
                 for actor in self.actors[-random.randint(1,min(2,count-1)):]:
                     start=random.uniform(7,10);index=np.searchsorted(self.times,start);path=actor['path']
                     velocity=path[index]-path[index-1];heading=math.atan2(velocity[1],velocity[0])
@@ -122,11 +133,41 @@ class AircraftScene:
             self.actors.append(dict(path=route,color=self.color,team='friendly',death=float('inf')))
         knots=[(0,w+300,h*.18),(8,w+140,h*.18),(11,w*.90,h*.28),(14,w*.45,h*.40),
                (17,w*.30,h*.22),(21,w*.63,h*.14),(25,w*.80,h*.28),(30,w+140,h*.40),(42,w+1500,h*.40)]
-        self.actors.append(dict(path=path(knots),color='#b8f3ff',team='ufo',death=float('inf'),ufo=True))
+        route=path(knots)
+        # Slow to a gentle drift before the surviving fighters shoot.
+        start=21.;stop=24.;park=np.array((w*.88,h*.42))
+        drift=np.array((w*.0025,-h*.0015))
+        index=int(round(start/.05));point=route[index].copy()
+        tangent=(route[index+1]-route[index-1])/.1
+        u=np.clip((self.times-start)/(stop-start),0,1)
+        slowing=((2*u**3-3*u**2+1)[:,None]*point+
+                 (u**3-2*u**2+u)[:,None]*(stop-start)*tangent+
+                 (-2*u**3+3*u**2)[:,None]*park+
+                 (u**3-u**2)[:,None]*(stop-start)*drift)
+        route[self.times>=start]=slowing[self.times>=start]
+        drifting=self.times>=stop
+        route[drifting]=park+(self.times[drifting]-stop)[:,None]*drift
+        self.actors.append(dict(path=route,color='#7cff4f',team='ufo',death=float('inf'),ufo=True))
         for fire,target in ((11.,0),(11.7,1),(12.4,0),(13.1,1)):
             if self.actors[target]['death']>fire and self.launch_possible(4,target,fire):self.fire(4,target,fire,random.random()<.25)
+        # First solve an actual interception against the drifting UFO, then
+        # evade a fraction of a second before that missile would hit it.
+        before=len(self.missiles)
+        self.fire(2,4,24.,True)
+        intercept=self.missiles.pop() if len(self.missiles)>before else None
+        self.actors[4]['death']=float('inf')
+        evade=intercept['terminal']-.3 if intercept and intercept['hit'] else 27.9
+        self.ufo_jump_time=math.ceil(evade/.05)*.05
+        direction=np.array((1.,-.65));direction/=np.linalg.norm(direction)
+        jump_velocity=direction*w*3.5
+        elapsed=np.maximum(self.times-self.ufo_jump_time,0)
+        jumping=self.times>=self.ufo_jump_time
+        jump_origin=self.position(self.actors[4],self.ufo_jump_time)
+        route[jumping]=jump_origin+elapsed[jumping,None]*jump_velocity
         for fire,source in ((24.,2),(26.,3)):
-            if self.launch_possible(source,4,fire):self.fire(source,4,fire,False)
+            # Recompute with the escape in place. Missiles pass the old stop
+            # point and burst rather than hitting or turning back on the UFO.
+            if self.launch_possible(source,4,fire):self.fire(source,4,fire,True)
         for target in (0,1):
             fire=14.3+target*.8
             if self.actors[target]['death']<=fire:continue
@@ -190,6 +231,8 @@ class AircraftScene:
                         exits.append((point[axis]-boundary)/velocity[axis])
                 delay=max(delay,min(value for value in exits if value>=0)+.15)
         count=math.ceil(delay/.05);self.entry_delay=count*.05
+        for actor in self.actors:
+            if 'join_time' in actor:actor['join_time']+=self.entry_delay
         if count:
             offsets=np.arange(count,0,-1)*.05
             for actor in self.actors:
@@ -223,6 +266,22 @@ class AircraftScene:
 
     @staticmethod
     def smooth(value):return value*value*(3-2*value)
+
+    def join_route(self,target,join_time,degrees):
+        """Integrate a smooth converging heading backward from the central join."""
+        index=min(np.searchsorted(self.times,join_time),len(self.times)-1)
+        duration=max(4.5,join_time*.85)
+        progress=self.smooth(np.clip((self.times-(join_time-duration))/duration,0,1))
+        angle=np.radians(degrees)*(1-progress)
+        velocity=np.gradient(target,.05,axis=0)
+        cosine=np.cos(angle);sine=np.sin(angle)
+        converging=np.column_stack((velocity[:,0]*cosine-velocity[:,1]*sine,
+                                    velocity[:,0]*sine+velocity[:,1]*cosine))
+        converging*=1+.08*(1-progress[:,None])
+        steps=(converging[:index]+converging[1:index+1])*.025
+        distance=np.vstack((np.zeros(2),np.cumsum(steps,axis=0)))
+        path=target.copy();path[:index+1]=target[index]+distance-distance[-1]
+        return path
 
     def curve(self,angle,speed,turn):
         # A continuous coordinated turn, with gentle roll-in and roll-out.
@@ -404,6 +463,8 @@ class ApplicationAnimations:
     def __init__(self,app):
         self.app=app;self.scene=None;self.host=None;self.overlay=None;self.scene_bag=[];self.splash_scenes=[]
         self.ufo_requested=False;self.ufo_active=False;self.ufo_next_allowed=0.
+        self.sounds=SoundEffects(lambda:(True,max(.25,app.settings.sound_volume)));self.ufo_sound_time=0.
+        self.replay_entered=None
         self.next_scene=time.monotonic()+.5;self.started=0;self.timer=app.after(50,self.tick)
         app.bind('<Destroy>',self.destroyed,add='+')
         app.bind('<KeyPress-u>',self.trigger_ufo,add='+');app.bind('<KeyPress-U>',self.trigger_ufo,add='+')
@@ -423,16 +484,42 @@ class ApplicationAnimations:
             except tk.TclError:pass
             self.timer=None
             self.clear()
+            self.sounds.close()
 
     def clear(self):
+        self.sounds.stop()
         if self.overlay is not None:self.overlay.close();self.overlay=None
         self.scene=None;self.splash_scenes=[];self.ufo_active=False
 
+    def play_ufo_sounds(self,elapsed):
+        for fire,name in ((self.scene.ufo_arrival_time,'sound1'),(self.scene.ufo_jump_time,'sound3')):
+            if self.ufo_sound_time<fire<=elapsed and elapsed-fire<.25:self.sounds.play(name)
+        for laser in self.scene.lasers:
+            fire=laser['fire']
+            if self.ufo_sound_time<fire<=elapsed and elapsed-fire<.25 and self.scene.actors[laser['target']]['death']>=fire:
+                self.sounds.play('sound2')
+        self.ufo_sound_time=elapsed
+
     def next_kind(self):
         if not self.scene_bag:
-            self.scene_bag=[random.choice(('formation','joinup','breakaway','kiss_off')),random.choice(('formation','joinup','breakaway','kiss_off')),'fight']
+            self.scene_bag=[random.choice(('formation','joinup','joinup_wide','joinup_cross','breakaway','kiss_off')),random.choice(('formation','joinup','joinup_wide','joinup_cross','breakaway','kiss_off')),'fight']
             random.shuffle(self.scene_bag)
         return self.scene_bag.pop()
+
+    def fade_into_replay(self,now,host):
+        if self.replay_entered is None:
+            self.replay_entered=now;self.sounds.stop()
+        progress=min(1,(now-self.replay_entered)/2)
+        if progress>=1:
+            if self.scene is not None or self.overlay is not None:self.clear()
+            return
+        if self.scene is None or self.overlay is None:return
+        if not host.winfo_ismapped() or self.app.state()=='iconic':return
+        surface=host.winfo_toplevel()
+        self.scene.resize(max(1,surface.winfo_width()),max(1,surface.winfo_height()))
+        opacity=self.app.settings.animation_opacity*(1-progress)
+        image=self.scene.draw(now-self.started,opacity)
+        self.overlay.draw(image,surface.winfo_rootx(),surface.winfo_rooty())
 
     def tick(self):
         self.timer=None
@@ -446,7 +533,18 @@ class ApplicationAnimations:
                          self.app.editor_page:settings.animation_editor,self.app.settings_page:settings.animation_settings}
                 enabled=settings.random_animations and options.get(host,False)
             if host is not self.host:
-                self.clear();self.host=host;self.next_scene=now+.5;self.configuration=None
+                # Tabs share the same overlay surface; keep the current scene
+                # and spawn schedule when moving between them.
+                changed_surface=self.host is None or not self.host.winfo_exists() or self.host.winfo_toplevel() is not host.winfo_toplevel()
+                if changed_surface:
+                    self.clear();self.next_scene=now+.5;self.configuration=None
+                self.host=host
+            if splash is None and host is self.app.replay_map:
+                self.fade_into_replay(now,host)
+                self.timer=self.app.after(50,self.tick);return
+            if self.replay_entered is not None:
+                self.next_scene+=now-self.replay_entered
+                self.replay_entered=None
             enabled=enabled and settings.animation_opacity>0 and host.winfo_ismapped() and self.app.state()!='iconic'
             configuration=(enabled,interval)
             if configuration!=getattr(self,'configuration',None):
@@ -457,12 +555,14 @@ class ApplicationAnimations:
                 surface=host.winfo_toplevel()
                 self.scene=AircraftScene(max(1,surface.winfo_width()),max(1,surface.winfo_height()),'ufo')
                 self.overlay=AnimationOverlay(self.app,surface);self.started=now
+                self.ufo_sound_time=0.
             if self.ufo_active:
                 if now-self.started>self.scene.duration:
                     self.clear();self.next_scene=now+interval
                 elif host.winfo_ismapped() and self.app.state()!='iconic':
                     surface=host.winfo_toplevel();self.scene.resize(max(1,surface.winfo_width()),max(1,surface.winfo_height()))
                     self.overlay.draw(self.scene.draw(now-self.started,settings.animation_opacity or .6),surface.winfo_rootx(),surface.winfo_rooty())
+                    self.play_ufo_sounds(now-self.started)
             elif not enabled:
                 if self.scene is not None or self.overlay is not None:self.clear()
             elif host is splash:

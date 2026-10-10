@@ -353,7 +353,7 @@ class PlayerEditor(ttk.Frame):
         if a is None:return False
         try:new=attempt_from_range(self.data[a.entity_id],start,end,a.anchor_time,a.edit_id,'Manual attempt' if a.edit_id.startswith('manual:') else 'Edited attempt')
         except ValueError as error:
-            if not quiet:messagebox.showerror('Invalid interval',str(error),parent=self)
+            if not quiet:self.app.show_error('Invalid interval',str(error),parent=self)
             return False
         index=next(i for i,item in enumerate(self.working) if item.edit_id==a.edit_id)
         self.working[index]=new;self.dirty=True
@@ -483,7 +483,7 @@ class PlayerEditor(ttk.Frame):
         data=self.data[self.track_id];t=data['time'];cursor=self.cursor if self.cursor is not None else t[0]
         start=max(float(t[0]),float(cursor)-45);end=min(float(t[-1]),float(cursor)+15)
         try:a=attempt_from_range(data,start,end,edit_id='manual:'+uuid.uuid4().hex)
-        except ValueError as error:messagebox.showerror('Cannot add attempt',str(error),parent=self);return
+        except ValueError as error:self.app.show_error('Cannot add attempt',str(error),parent=self);return
         self.working.append(a);self.selected_id=a.edit_id;self.dirty=True;self.populate();self.select_attempt()
 
     def delete_attempt(self):
@@ -498,7 +498,8 @@ class PlayerEditor(ttk.Frame):
             self.app.edits.save_player(self.app.carrier['id'],self.player,self.working,self.app.auto_attempts)
             self.app.settings.editor_radius_nm=self.map_radius
             self.app.settings.save(self.app.settings_path)
-        except (OSError,ValueError) as error:messagebox.showerror('Could not save editor',str(error),parent=self);return
+        except (OSError,ValueError) as error:self.app.show_error('Could not save editor',str(error),parent=self);return
+        self.app.play_sound('save')
         self.dirty=False;self.saved_ranges=self.range_signature();self.app.apply_edits();self.app.status.set('Attempt edits saved for '+self.player+'.');self.notice.set('Saved attempts for '+self.player+'.');self.update_save_style()
 
     def range_signature(self):

@@ -4,11 +4,12 @@ import math
 from tkinter import ttk,messagebox
 from tkinter.font import Font
 from scoring import maximum,is_best
-from engine import clock,last_attempts
+from engine import clock,last_attempts,point_values_are_default
 from plots import BG,TEXT,MUTED
 from score_export import export_scores
 
 COLUMNS=(('name','Name'),('loc','Localizer'),('glide','Glide'),('aoa','AoA'),('wire','Wire'),('total','Total'))
+POINT_WARNING='Point values are not set to CAW-8 default values'
 CASE3_COLUMNS=(COLUMNS[0],('position','Platform\nPosition'),('speed','Platform\nSpeed'))+COLUMNS[1:]
 
 def score_sheet(attempts,scores,bests,column='total',descending=True,best_only=False,columns=COLUMNS,last_only=False):
@@ -54,7 +55,8 @@ class ScoreWindow(ttk.Frame):
         self.sort_column='total';self.descending=True;self.rows=[];self.winners={};self.cell_items={};self._drawing=False;self._draw_job=None
         ttk.Label(self,text='PLAYER SCORES',font=('Helvetica',16,'bold'),padding=16).pack(anchor='w')
         self.summary=tk.StringVar()
-        controls=ttk.Frame(self,padding=(16,0,16,12));controls.pack(fill='x')
+        self.point_warning=ttk.Label(self,text=POINT_WARNING,foreground='#ffe05c',padding=(16,0,16,8))
+        controls=ttk.Frame(self,padding=(16,0,16,12));controls.pack(fill='x');self.score_controls=controls
         self.best_only=tk.BooleanVar(value=False)
         self.last_only=False
         self.show_all_btn=ttk.Button(controls,text='Show All',command=lambda:self.set_best_only(False));self.show_all_btn.pack(side='left')
@@ -104,7 +106,9 @@ class ScoreWindow(ttk.Frame):
             for widget,options in packed:widget.pack(**options)
             self.refresh()
         ttk.Label(dialog,text='Select Players & Attempts',font=('Helvetica',16,'bold'),padding=16).pack(anchor='w')
+        self.export_warning=ttk.Label(dialog,text=POINT_WARNING,foreground='#ffe05c',padding=(16,0,16,8))
         selection_controls=ttk.Frame(dialog,padding=(16,0,16,12));selection_controls.pack(fill='x')
+        self.export_controls=selection_controls;self.update_point_warning()
         footer=ttk.Frame(dialog,padding=16);footer.pack(side='bottom',fill='x')
         body=ttk.Frame(dialog,padding=(16,0,16,0));body.pack(fill='both',expand=True)
         tree=ttk.Treeview(body,show='tree',selectmode='none');tree.pack(side='left',fill='both',expand=True)
@@ -157,8 +161,8 @@ class ScoreWindow(ttk.Frame):
             if not chosen:return
             try:path=export_scores(chosen,scores,wires,numbers,settings,filename)
             except (OSError,ValueError) as error:
-                messagebox.showerror('Could not export scores',str(error),parent=dialog);return
-            back();self.app.status.set(f'Scores exported to {path}')
+                self.app.show_error('Could not export scores',str(error),parent=dialog);return
+            back();self.app.status.set(f'Scores exported to {path}');self.app.play_sound('export')
             messagebox.showinfo('Scores Exported',f'Saved {len(chosen)} attempts to:\n{path}',parent=self.app)
         ttk.Button(footer,text='Back',command=back).pack(side='left')
         next_btn=ttk.Button(footer,text='Next',command=finish,state='disabled');next_btn.pack(side='right')
@@ -169,7 +173,18 @@ class ScoreWindow(ttk.Frame):
         self.descending=not self.descending if key==self.sort_column else key!='name'
         self.sort_column=key;self.refresh()
 
+    def update_point_warning(self):
+        changed=not point_values_are_default(self.app.settings)
+        exporting=getattr(self,'export_page',None) is not None
+        if changed and not exporting:self.point_warning.pack(fill='x',before=self.score_controls)
+        else:self.point_warning.pack_forget()
+        warning=getattr(self,'export_warning',None)
+        if warning is not None and warning.winfo_exists():
+            if changed:warning.pack(fill='x',before=self.export_controls)
+            else:warning.pack_forget()
+
     def refresh(self):
+        self.update_point_warning()
         self.app.refresh_scores()
         self.show_all_btn.configure(style='Selected.TButton' if not self.best_only.get() and not self.last_only else 'TButton')
         self.best_only_btn.configure(style='Selected.TButton' if self.best_only.get() else 'TButton')
@@ -222,7 +237,12 @@ class ScoreWindow(ttk.Frame):
                 if score and not score.complete:name+=' *'
             name_color='#ffce76' if not group and score and not score.complete else TEXT
             if group:
-                self.canvas.create_text(12,y+rowheight/2,text=name,fill=name_color,font=('Helvetica',11,'bold'),anchor='w',width=max(1,edges[1]-34))
+                crown_rank=self.app.player_crown_ranks.get(row['player'])
+                offset=12
+                if crown_rank is not None:
+                    self.canvas.create_image(12,y+rowheight/2,image=self.app.crown_icon(crown_rank),anchor='w',tags='player-crown')
+                    offset=38
+                self.canvas.create_text(offset,y+rowheight/2,text=name,fill=name_color,font=('Helvetica',11,'bold'),anchor='w',width=max(1,edges[1]-offset-22))
             else:
                 wire_text='Bolter' if wire=='Bolter' else f'Wire {wire}' if wire else 'Wire Not Set'
                 prefix=name+' · ';size=11;label_font=Font(self,font=('Helvetica',size))

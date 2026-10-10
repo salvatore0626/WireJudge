@@ -1,4 +1,4 @@
-# Wire Judge V1.2
+# Wire Judge V1.3
 by STRAYDOG0626
 
 Open a VTOL VR `.vtr` replay to view carrier approaches, score landings, and watch the replay on a 2D map.

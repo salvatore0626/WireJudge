@@ -6,14 +6,12 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
 from engine import (full_track,quaternion_candidate,rotate,inverse,velocity_from_positions,
-                    approach_reference,glide_origin_msl_ft,interpolate_quaternions)
-from plots import BG,PANEL,TEXT,MUTED
+                    approach_reference,glide_origin_msl_ft,interpolate_quaternions,BLACK_BOX_METRICS)
+from plots import BG,PANEL,TEXT,MUTED,PITCH_BELOW_COLOR,HSI_COLOR,pitch_line_data,diagnostic_reference_line
 from toolbar import DeferredFigureCanvasTkAgg
+from replay_glide import aoa_outline,localizer_corridor_distance,SPEED_ON,SPEED_FAST,SPEED_SLOW
 
-METRICS={'speed':('Speed','kt','#69b7ff'),'aoa':('AoA','°','#8dd8ff'),
-         'vs':('Vertical Speed','ft/min','#f4a1cf'),'altitude':('Altitude','ft MSL','#d5b28a'),
-         'bank':('Bank','°','#ffb2b8'),'pitch':('Pitch','°','#ffe879'),
-         'loc':('Loc Offset','°','#ff9850'),'glide':('Glide Offset','°','#b491ff')}
+METRICS={('vs' if key=='vertical_speed' else key):value for key,value in BLACK_BOX_METRICS.items()}
 WINDOWS={'30 seconds':30,'2 min':120,'5 min':300,'10 min':600}
 AXIS_MINIMUMS={'speed':(1,10),'aoa':(.5,4),'vs':(50,200),'altitude':(10,200),
                'bank':(1,10),'pitch':(1,10),'loc':(1,10),'glide':(1,10)}
@@ -68,6 +66,7 @@ class ReplayInspector(ttk.Frame):
             button.grid(row=index//2,column=index%2,sticky='ew',padx=(0,3) if index%2==0 else (3,0),pady=2);self.buttons[key]=button
         controls=ttk.Frame(self);controls.pack(fill='x',pady=(0,4));ttk.Label(controls,text='Look back:').pack(side='left',padx=(0,6))
         self.window=tk.StringVar(value='2 min');self.selector=ttk.Combobox(controls,textvariable=self.window,values=tuple(WINDOWS),state='readonly',width=12)
+        self.page.register_dropdown(self.selector)
         self.selector.pack(side='left');self.selector.bind('<<ComboboxSelected>>',lambda event:self.update(self.page.cursor))
         self.fig=Figure(figsize=(3,2),dpi=100,facecolor=BG)
         footer=ttk.Frame(self);footer.pack(side='bottom',fill='x',pady=(4,0))
@@ -94,8 +93,7 @@ class ReplayInspector(ttk.Frame):
         inspector.docked_inspector=self;inspector.popout_window=window
         inspector.popout_button.configure(text='Pop In',command=inspector.pop_in)
         inspector.copy_state_from(self)
-        self.popout_window=window;self.grid_remove()
-        self.master.rowconfigure(0,uniform='');self.master.rowconfigure(1,weight=0,uniform='')
+        self.sidebar_split=self.master.sashpos(0);self.popout_window=window;self.master.forget(self)
         self.page.inspector=inspector
         window.protocol('WM_DELETE_WINDOW',inspector.pop_in)
 
@@ -103,9 +101,9 @@ class ReplayInspector(ttk.Frame):
         dock=self.docked_inspector
         if dock is None:return
         dock.copy_state_from(self);self.page.inspector=dock
-        dock.popout_window=None;dock.grid()
-        dock.master.rowconfigure(0,weight=1,uniform='sidebar')
-        dock.master.rowconfigure(1,weight=1,uniform='sidebar')
+        dock.popout_window=None;dock.master.add(dock,weight=1)
+        dock.master.update_idletasks()
+        dock.master.sashpos(0,dock.sidebar_split)
         for attribute in ('_idle_draw_id','_resize_job'):
             job=getattr(self.canvas,attribute,None)
             if job is not None:
@@ -124,7 +122,7 @@ class ReplayInspector(ttk.Frame):
 
     def build_graph(self):
         self.graph_background=None;self.axis_scale_times={};self.axis_steps={};self.graph_window=None
-        self.fig.clear();self.axes={};self.lines={}
+        self.fig.clear();self.axes={};self.lines={};self.pitch_below=None
         keys=[key for key in METRICS if key in self.metrics]
         if not keys:
             self.fig.text(.5,.5,'Select a stat to graph',ha='center',va='center',color=MUTED,fontsize=9)
@@ -133,6 +131,7 @@ class ReplayInspector(ttk.Frame):
             for index,(key,ax) in enumerate(zip(keys,axes)):
                 label,unit,color=METRICS[key];ax.set_facecolor(PANEL);ax.tick_params(colors=MUTED,labelsize=7,pad=1)
                 ax.grid(color='#334357',alpha=.4,lw=.5)
+                diagnostic_reference_line(ax,key)
                 for spine in ax.spines.values():spine.set_color('#344258')
                 short_label={'loc':'Loc','glide':'Glide','vs':'V/S','altitude':'Alt'}.get(key,label)
                 ax.text(.02,.96,short_label+' · '+unit,transform=ax.transAxes,color=color,fontsize=7,
@@ -141,7 +140,9 @@ class ReplayInspector(ttk.Frame):
                 ax.set_ylim(low,high);ax.yaxis.set_major_locator(MultipleLocator(step))
                 self.axis_steps[key]=step
                 ax.tick_params(labelbottom=index==len(keys)-1)
-                self.lines[key],=ax.plot([],[],color=color,lw=1.1,animated=True);self.axes[key]=ax
+                self.lines[key],=ax.plot([],[],color=color,ls='--' if unit=='°' else '-',lw=1.1,animated=True);self.axes[key]=ax
+                if key=='pitch':
+                    self.pitch_below,=ax.plot([],[],color=PITCH_BELOW_COLOR,ls='--',lw=1.1,animated=True)
             axes[-1].set_xlabel('Seconds before cursor',color=MUTED,fontsize=7,labelpad=2)
             self.graph_margins()
         self.canvas.draw_idle()
@@ -161,6 +162,7 @@ class ReplayInspector(ttk.Frame):
             self.canvas.draw_idle();return
         self.canvas.restore_region(self.graph_background)
         for key,line in self.lines.items():self.axes[key].draw_artist(line)
+        if self.pitch_below is not None:self.axes['pitch'].draw_artist(self.pitch_below)
         self.canvas.blit(self.fig.bbox)
 
     def set_graph_scale(self,key,y,cursor,reset):
@@ -178,6 +180,7 @@ class ReplayInspector(ttk.Frame):
             self.axis_scale_times[key]=cursor
 
     def update(self,cursor):
+        if self.page.dropdown_busy:return
         matches=[d for d in self.page.data if self.selected is not None and d.get('inspect_key')==self.selected]
         active=next((d for d in matches if d['time'][0]<=cursor<=d['time'][-1]),None)
         chosen=active or (min(matches,key=lambda d:min(abs(cursor-d['time'][0]),abs(cursor-d['time'][-1]))) if matches else None)
@@ -189,8 +192,14 @@ class ReplayInspector(ttk.Frame):
                 try:self.samples=diagnostic_samples(chosen['track'],self.page.app.carrier,self.page.app.settings)
                 except (ValueError,IndexError):pass
         username=chosen['player'] if chosen and '(' in chosen['track']['name'] else 'AI'
-        self.title.set(chosen['track']['name'] if chosen and chosen['category']=='missile' else username+' - '+chosen['callsign'] if chosen else 'Inspector')
-        values={key:np.nan for key in METRICS};values['dme']=np.nan
+        if chosen and chosen['category'] in ('missile','sam'):title=chosen['track']['name']
+        elif chosen:
+            model=chosen.get('airframe') or 'Unknown Aircraft'
+            title=username+' - '+chosen['callsign']
+            if model.upper() not in title.upper():title+=' - '+model
+        else:title='Inspector'
+        self.title.set(title)
+        values={key:np.nan for key in METRICS};values['dme']=np.nan;values['in_localizer']=False
         if self.samples is not None and active:
             t=self.samples['time'];i=min(max(1,int(np.searchsorted(t,cursor))),len(t)-1)
             if i not in active['breaks'] or cursor in (t[i-1],t[i]):
@@ -204,7 +213,10 @@ class ReplayInspector(ttk.Frame):
                 values['bank']=float(np.degrees(np.arctan2(-right[1],up[1])))
                 values['pitch']=float(np.degrees(np.arcsin(np.clip(forward[1],-1,1))))
                 values['speed']=float(active['speed'][i-1])
-                values['dme']=float(np.hypot(np.interp(cursor,t,active['x']),np.interp(cursor,t,active['y'])))
+                x=float(np.interp(cursor,t,active['x']));y=float(np.interp(cursor,t,active['y']))
+                values['dme']=float(np.hypot(x,y))
+                distance=localizer_corridor_distance(self.page.app.settings,x,y)
+                values['in_localizer']=active['category'] in ('friendly','enemy') and distance is not None and values['dme']<=3
         self.last_values=values;self.draw_attitude()
         for key,(label,unit,color) in METRICS.items():
             value=values[key];self.buttons[key].configure(text=f'{label}: {value:.1f} {unit}' if np.isfinite(value) else label+': —')
@@ -225,7 +237,10 @@ class ReplayInspector(ttk.Frame):
                         following=np.flatnonzero(times>=t[index])
                         if len(following):y[following[0]]=np.nan
                     x=times-cursor
-            self.lines[key].set_data(x,y)
+            if key=='pitch':
+                px,above,below=pitch_line_data(x,y)
+                self.lines[key].set_data(px,above);self.pitch_below.set_data(px,below)
+            else:self.lines[key].set_data(x,y)
             if ax.get_xlim()!=(-window,0):ax.set_xlim(-window,0);self.graph_background=None
             self.set_graph_scale(key,y,cursor,reset_scale)
         self.paint_graph()
@@ -233,7 +248,7 @@ class ReplayInspector(ttk.Frame):
     def draw_attitude(self):
         canvas=self.attitude;canvas.delete('all');width=max(canvas.winfo_width(),260)
         bank=(self.last_values or {}).get('bank',np.nan);pitch=(self.last_values or {}).get('pitch',np.nan)
-        x=width*.125;y=39;r=min(27,width/8-5)
+        x=width*.1;y=39;r=min(27,width/10-5)
         canvas.create_oval(x-r,y-r,x+r,y+r,outline=MUTED,width=1)
         canvas.create_line(x-r-5,y,x-r+3,y,fill=MUTED);canvas.create_line(x+r-3,y,x+r+5,y,fill=MUTED)
         if np.isfinite(bank):
@@ -242,7 +257,7 @@ class ReplayInspector(ttk.Frame):
             canvas.create_line(x,y,x+8*np.sin(a),y-8*np.cos(a),fill=TEXT,width=2)
         canvas.create_oval(x-3,y-3,x+3,y+3,fill=TEXT,outline='')
         canvas.create_text(x,80,text='Bank',fill=MUTED,font=('Helvetica',9))
-        x=width*.375
+        x=width*.3
         # Vertical back and right semicircle form the pitch indicator's D outline.
         canvas.create_line(x,y-r,x,y+r,fill=MUTED)
         canvas.create_arc(x-r,y-r,x+r,y+r,start=-90,extent=180,style='arc',outline=MUTED)
@@ -251,7 +266,21 @@ class ReplayInspector(ttk.Frame):
             a=np.radians(np.clip(pitch,-90,90))
             canvas.create_line(x,y,x+r*.9*np.cos(a),y-r*.9*np.sin(a),fill=TEXT,width=2,arrow=tk.LAST)
         canvas.create_text(x+8,80,text='Pitch',fill=MUTED,font=('Helvetica',9))
-        x=width*.625
+        x=width*.5
+        values=self.last_values or {}
+        active=aoa_outline(values.get('aoa',np.nan)) if values.get('in_localizer',False) else None
+        inactive='#686e78';size=min(9,r*.4)
+        canvas.create_line(x-size,y-21,x,y-13,x+size,y-21,
+                           fill=SPEED_SLOW if active==SPEED_SLOW else inactive,
+                           width=3,tags='aoa-high')
+        canvas.create_oval(x-size,y-size,x+size,y+size,
+                           outline=SPEED_ON if active==SPEED_ON else inactive,
+                           width=3,tags='aoa-on')
+        canvas.create_line(x-size,y+21,x,y+13,x+size,y+21,
+                           fill=SPEED_FAST if active==SPEED_FAST else inactive,
+                           width=3,tags='aoa-low')
+        canvas.create_text(x,80,text='AoA',fill=MUTED,font=('Helvetica',9),tags='aoa-label')
+        x=width*.7
         canvas.create_oval(x-r,y-r,x+r,y+r,outline=MUTED,width=1)
         for offset in (-.6,-.3,.3,.6):
             canvas.create_oval(x+r*offset-1,y-1,x+r*offset+1,y+1,fill=MUTED,outline='')
@@ -260,16 +289,16 @@ class ReplayInspector(ttk.Frame):
         settings=self.page.app.settings
         if np.isfinite(loc):
             needle=x+r*.8*np.clip(loc/settings.localizer_tolerance_deg,-1,1)
-            canvas.create_line(needle,y-r*.7,needle,y+r*.7,fill=METRICS['loc'][2],width=2,tags='loc-needle')
+            canvas.create_line(needle,y-r*.7,needle,y+r*.7,fill=HSI_COLOR,width=2,tags='loc-needle')
         if np.isfinite(glide):
             needle=y+r*.8*np.clip(glide/settings.glide_tolerance_deg,-1,1)
-            canvas.create_line(x-r*.7,needle,x+r*.7,needle,fill=METRICS['glide'][2],width=2,tags='glide-needle')
+            canvas.create_line(x-r*.7,needle,x+r*.7,needle,fill=HSI_COLOR,width=2,tags='glide-needle')
         canvas.create_oval(x-2,y-2,x+2,y+2,fill=TEXT,outline='')
         canvas.create_text(x,80,text='HSI',fill=MUTED,font=('Helvetica',9))
-        x=width*.875;half=width/8-7
+        x=width*.9;half=width/10-7
         canvas.create_rectangle(x-half,y-26,x+half,y+26,outline=MUTED)
         canvas.create_text(x,y-16,text='DME',fill=TEXT,font=('Helvetica',9))
         canvas.create_rectangle(x-half+4,y-6,x+half-4,y+16,fill=PANEL,outline=MUTED)
         dme=values.get('dme',np.nan)
-        canvas.create_text(x,y+5,text=f'{dme:.2f}' if np.isfinite(dme) else '—',fill=TEXT,font=('Helvetica',11,'bold'),tags='dme-value')
+        canvas.create_text(x,y+5,text=f'{dme:.2f}' if np.isfinite(dme) else '—',fill=TEXT,font=('Helvetica',11 if half>=25 else 9,'bold'),tags='dme-value')
         canvas.create_text(x,80,text='NM',fill=MUTED,font=('Helvetica',9))

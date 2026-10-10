@@ -1,16 +1,18 @@
-"""Wire Judge 2 — local native-VTR approach viewer."""
+"""Wire Judge v1.3 — local native-VTR approach viewer."""
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
-import json, os, queue, threading, tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import json, os, queue, re, threading, tkinter as tk
+from tkinter import ttk, filedialog, messagebox, font as tkfont
+from PIL import Image,ImageDraw,ImageTk
 from toolbar import GraphToolbar,DeferredFigureCanvasTkAgg
 from reader import read_motion
-from engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,target_intercept_nm,black_box_data,BLACK_BOX_METRICS
+from engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,black_box_data,BLACK_BOX_METRICS
 from plots import make_figure,draw,BG,PANEL,TEXT,MUTED,GREEN,START_END_COLOR,ATTEMPT_COLORS,MAX_COMPARE_ATTEMPTS,ApproachCursor
 from annotations import Annotations,WIRE_OPTIONS,replay_digest
 from attempt_edits import AttemptEdits
 from app_animations import ApplicationAnimations
+from sound_effects import SoundEffects
 from editor import AttemptEditorPage
 from scoring import score_attempt,best_by_player,is_best,maximum,approach_maximum
 from score_window import ScoreWindow
@@ -20,7 +22,7 @@ SETTINGS_PATH=Path.home()/'.wire_judge'/'settings.json'
 ANNOTATIONS_DIR=Path.home()/'.wire_judge'/'annotations'
 AGREEMENT_PATH=Path.home()/'.wire_judge'/'agreement.json'
 ASSETS_DIR=Path(__file__).resolve().parent/'assets'
-APP_VERSION='1.2'
+APP_VERSION='1.3'
 STARTUP_TERMS=(
     'All scores and calculations are subject to change. By clicking “I Agree,” you acknowledge that STRAYDOG and any applications created by STRAYDOG are not responsible for emotional distress, bruised egos, damaged flight controls, or heated Discord arguments resulting from your questionable approach.',
     'Software bugs and calculation errors may occur. However, their existence does not automatically explain your bolter.',
@@ -34,6 +36,9 @@ class WireJudge(tk.Tk):
         self.header_logo=tk.PhotoImage(file=str(ASSETS_DIR/'header_logo.png'))
         self.iconphoto(True,self.app_icon)
         self.settings=Settings.load(SETTINGS_PATH);self.tracks=[];self.attempts=[];self.selected=None;self.carrier=None;self.filename=None;self.busy=False;self.messages=queue.Queue()
+        self.sounds=SoundEffects(lambda:(self.settings.sound_effects,self.settings.sound_volume))
+        self.bind('<Destroy>',lambda event:self.sounds.close() if event.widget is self else None,add='+')
+        self.bind('<KeyPress>',self.wire_shortcut,add='+')
         self.annotations=None;self.comparison_ids=[]
         self.edits=None;self.auto_attempts=[];self.settings_path=SETTINGS_PATH;self.row_players={}
         self.scores={};self.best_scores={};self.score_window=None
@@ -95,22 +100,23 @@ class WireJudge(tk.Tk):
         self.player_search=tk.StringVar();search=ttk.Entry(left,textvariable=self.player_search);search.pack(fill='x');self.player_search.trace_add('write',lambda *_:self.populate())
         ttk.Label(left,text='Search player or aircraft',foreground=MUTED,font=('Helvetica',9)).pack(anchor='w',pady=(3,10))
         treeframe=ttk.Frame(left);treeframe.pack(fill='both',expand=True)
-        self.tree=ttk.Treeview(treeframe,show='tree',selectmode='none');self.tree.column('#0',width=350,minwidth=250);self.tree.pack(side='left',fill='both',expand=True)
-        scroll=ttk.Scrollbar(treeframe,orient='vertical',command=self.tree.yview);scroll.pack(side='right',fill='y');self.tree.configure(yscrollcommand=scroll.set);self.tree.bind('<<TreeviewSelect>>',self.select_attempt)
+        self.tree=ttk.Treeview(treeframe,show='tree',selectmode='none');self.tree.column('#0',width=414,minwidth=220)
+        self.tree.pack(side='left',fill='both',expand=True)
+        self.wire_labels={};self.wire_label_job=None
+        scroll=ttk.Scrollbar(treeframe,orient='vertical',command=self.tree.yview);scroll.pack(side='right',fill='y')
+        def scrolled(first,last):
+            scroll.set(first,last);self.schedule_wire_labels()
+        self.tree.configure(yscrollcommand=scrolled);self.tree.bind('<<TreeviewSelect>>',self.select_attempt)
+        self.tree.bind('<<TreeviewSelect>>',lambda _:self.schedule_wire_labels(),add='+')
+        self.tree.bind('<Configure>',lambda _:self.schedule_wire_labels(),add='+')
         self.tree.bind('<Double-1>',self.open_player_editor)
         self.tree.bind('<Button-1>',self.toggle_comparison_row)
         self.tree.bind('<ButtonRelease-1>',lambda _: 'break')
         self.tree.bind('<Shift-Button-1>',self.toggle_comparison_row)
-        self.compare_icons=[]
-        for color,_ in ATTEMPT_COLORS:
-            icon=tk.PhotoImage(width=16,height=16)
-            for y in range(16):
-                for x in range(16):
-                    if (x-7.5)**2+(y-7.5)**2<=25:icon.put(color,(x,y))
-            self.compare_icons.append(icon)
+        self.attempt_icons={};self.player_crown_ranks={}
         self.count_text=tk.StringVar(value='No replay loaded')
         wirebar=ttk.Frame(left,padding=(0,8,0,4));wirebar.pack(side='bottom',fill='x',before=treeframe)
-        ttk.Label(wirebar,text='Wire Caught:').pack(side='left')
+        self.wire_label=ttk.Label(wirebar,text='Wire Caught:');self.wire_label.pack(side='left')
         self.wire_value=tk.StringVar();self.wire_select=ttk.Combobox(wirebar,textvariable=self.wire_value,values=WIRE_OPTIONS,width=9,state='disabled');self.wire_select.pack(side='left',padx=8);self.wire_select.bind('<<ComboboxSelected>>',self.set_wire)
         self.fig=make_figure();self.canvas=DeferredFigureCanvasTkAgg(self.fig,master=right);self.canvas.get_tk_widget().pack(fill='both',expand=True)
         graphbar=ttk.Frame(right);graphbar.pack(side='bottom',fill='x',before=self.canvas.get_tk_widget())
@@ -124,7 +130,7 @@ class WireJudge(tk.Tk):
         style.configure('HiddenGraph.TButton',background='#39424f',foreground=TEXT,padding=(8,7))
         style.map('HiddenGraph.TButton',background=[('active','#4b5665')])
         self.graph_visibility=[True,True,True,False];self.graph_buttons=[]
-        for index,label in enumerate(('Glide Path','Localizer','AoA/Groundspeed')):
+        for index,label in enumerate(('Glide Path','Localizer','AoA/Speed')):
             button=ttk.Button(graph_toggles,text=label,style='Selected.TButton',command=lambda index=index:self.toggle_graph(index))
             self.graph_buttons.append(button)
         for button in reversed(self.graph_buttons):button.pack(side='right',padx=3)
@@ -226,10 +232,10 @@ class WireJudge(tk.Tk):
         try:
             kind,value,error=self.messages.get_nowait()
             if error:
-                self.set_busy(False,'Could not complete '+kind+'.');messagebox.showerror('Wire Judge',error,parent=self)
+                self.set_busy(False,'Could not complete '+kind+'.');self.show_error('Wire Judge',error,parent=self)
             elif kind=='load':
                 self.filename,(self.tracks,info),digest=value;self.annotations=Annotations(ANNOTATIONS_DIR/(digest+'.json'));self.edits=AttemptEdits(ANNOTATIONS_DIR/(digest+'_attempts.json'));self.auto_attempts=[];self.attempts=[];self.selected=None;self.carrier=None;self.editor_page.reset();self.populate();self.redraw()
-                self.show_tabs();self.set_busy(False,'Replay loaded. Select the correct carrier unit.')
+                self.show_tabs();self.set_busy(False,'Replay loaded. Select the correct carrier unit.');self.play_sound('load')
                 if not self.tracks:messagebox.showinfo('No motion tracks','This VTR contains no motion tracks. Aircraft approaches cannot be reconstructed from this file.',parent=self)
                 else:self.choose_carrier()
             elif kind=='analyze':
@@ -303,7 +309,9 @@ class WireJudge(tk.Tk):
     def populate(self):
         if not hasattr(self,'tree'):return
         self.refresh_scores();self.tree.tag_configure('best',foreground='#6cd9af');self.tree.tag_configure('provisional',foreground='#ffce76')
-        old=self.selected;self.tree.delete(*self.tree.get_children());self.row_attempts={};self.row_players={}
+        old=self.selected
+        for label in self.wire_labels.values():label.destroy()
+        self.wire_labels={};self.tree.delete(*self.tree.get_children());self.row_attempts={};self.row_players={}
         mode=self.attempt_filter.get()
         visible=last_attempts(self.attempts) if mode=='Last attempt' else [a for a in self.attempts if is_best(a,self.scores.get(a.edit_id),self.best_scores)] if mode=='Best attempt' else self.attempts
         groups=defaultdict(list)
@@ -313,15 +321,31 @@ class WireJudge(tk.Tk):
         text=self.player_search.get().strip().casefold();shown=0;selected_row=None
         for n,(player,attempts) in enumerate(sorted(groups.items(),key=lambda p:p[0].casefold())):
             if text and text not in player.casefold() and not any(text in a.aircraft.casefold() for a in attempts):continue
-            parent=f'p{n}';self.tree.insert('','end',iid=parent,text=f'{player}  ({len(attempts)})',open=True)
+            parent=f'p{n}';rank=self.player_crown_ranks.get(player)
+            crown=self.crown_icon(rank) if rank is not None else ''
+            self.tree.insert('','end',iid=parent,text=f'{player}  ({len(attempts)})',image=crown,open=True)
             self.row_players[parent]=player
             for i,a in enumerate(sorted(attempts,key=lambda a:a.start)):
                 row=f'{parent}a{i}';self.row_attempts[row]=a;shown+=1
-                wire=self.get_wire(a);suffix=('  ·  Bolter' if wire=='Bolter' else '  ·  Wire '+wire) if wire else ''
                 score=self.scores.get(a.edit_id)
-                if score:suffix+=f'  ·  {score.total:,.1f}'+(' provisional' if not score.complete else '')
                 best=is_best(a,score,self.best_scores)
-                self.tree.insert(parent,'end',iid=row,text=('★ ' if best else '')+f'{clock(a.start)}  ·  {a.aircraft}'+suffix,tags=('provisional',) if score and not score.complete else ('best',) if best else ())
+                airframe=re.sub(r'\b[A-Z]\d+-\d+\b\s*','',a.aircraft,count=1,flags=re.I).strip()
+                total=f'{score.total:,.1f}' if score else '—'
+                wire=self.get_wire(a)
+                wire_text='Bolter' if wire=='Bolter' else f'Wire {wire}' if wire else ''
+                prefix=f'{clock(a.start)} - {airframe} - '
+                self.tree.insert(parent,'end',iid=row,text=prefix+total+(' - '+wire_text if wire_text else ''),tags=('provisional',) if score and not score.complete else ('best',) if best else ())
+                if not wire:
+                    label=tk.Canvas(self.tree,bg=PANEL,highlightthickness=0,borderwidth=0)
+                    label.attempt_text=(prefix,total)
+                    label.attempt_color='#ffce76' if score and not score.complete else '#6cd9af' if best else TEXT
+                    label.bind('<Button-1>',lambda event:self.toggle_comparison_row(self.wire_label_event(event)))
+                    label.bind('<Shift-Button-1>',lambda event:self.toggle_comparison_row(self.wire_label_event(event)))
+                    label.bind('<Double-1>',lambda event:self.open_player_editor(self.wire_label_event(event)))
+                    label.bind('<MouseWheel>',lambda event:self.tree.event_generate('<MouseWheel>',delta=event.delta))
+                    for wheel in ('<Button-4>','<Button-5>'):
+                        label.bind(wheel,lambda event,wheel=wheel:self.tree.event_generate(wheel))
+                    self.wire_labels[row]=label
                 if a is old:selected_row=row
         self.count_text.set(f'{shown} shown / {len(self.attempts)} detected attempts')
         if self.score_window and self.score_window.winfo_exists():self.score_window.refresh()
@@ -330,6 +354,8 @@ class WireJudge(tk.Tk):
         self.comparison_ids=[key for key in self.comparison_ids if key in available]
         if not self.comparison_ids and selected_row:self.comparison_ids=[self.row_attempts[selected_row].edit_id]
         self.tree.selection_set([rows[key] for key in self.comparison_ids if key in rows])
+        self.update_compare_icons()
+        self.schedule_wire_labels()
         if not self.comparison_ids:self.selected=None;self.redraw()
 
     def apply_edits(self):
@@ -361,7 +387,7 @@ class WireJudge(tk.Tk):
     def toggle_points(self):
         self.settings.show_data_points=self.points_value.get()
         try:self.settings.save(SETTINGS_PATH)
-        except OSError as error:messagebox.showerror('Could not save setting',str(error),parent=self)
+        except OSError as error:self.show_error('Could not save setting',str(error),parent=self)
         self.redraw(preserve_view=True)
 
     def toggle_graph(self,index):
@@ -401,16 +427,69 @@ class WireJudge(tk.Tk):
         self.selected=focused if focused is not None and focused.edit_id in kept else lookup.get(kept[-1])
         self.redraw()
 
+    def crown_icon(self,rank):
+        key=('crown',rank)
+        if key not in self.attempt_icons:
+            color=('#ffd454','#c8d2de','#cd955e')[rank]
+            image=Image.new('RGBA',(20,18));painter=ImageDraw.Draw(image)
+            painter.polygon([(2,5),(6,8),(10,2),(14,8),(18,5),(16,13),(4,13)],fill=color)
+            painter.line((4,15,16,15),fill=color,width=2)
+            self.attempt_icons[key]=ImageTk.PhotoImage(image,master=self)
+        return self.attempt_icons[key]
+
+    def schedule_wire_labels(self):
+        if self.wire_label_job is None:self.wire_label_job=self.after_idle(self.update_wire_labels)
+
+    def wire_label_event(self,event):
+        event.x+=event.widget.winfo_x();event.y+=event.widget.winfo_y();event.widget=self.tree
+        return event
+
+    def update_wire_labels(self):
+        self.wire_label_job=None
+        selected=set(self.tree.selection())
+        if not hasattr(self,'attempt_text_font'):
+            self.attempt_text_font=tkfont.Font(self,font=ttk.Style(self).lookup('Treeview','font') or ('Helvetica',11))
+        font=self.attempt_text_font
+        text_offsets={}
+        for row,label in self.wire_labels.items():
+            box=self.tree.bbox(row,'#0')
+            if not box:label.place_forget();continue
+            x,y,width,height=box
+            depth=0;parent=self.tree.parent(row)
+            while parent:depth+=1;parent=self.tree.parent(parent)
+            if depth not in text_offsets:
+                text_offsets[depth]=next((offset for offset in range(min(width,140))
+                    if self.tree.identify_element(x+offset,y+height//2)=='text'),None)
+            offset=text_offsets[depth]
+            if offset is None:label.place_forget();continue
+            prefix,total=label.attempt_text
+            label.configure(bg='#294b70' if row in selected else PANEL)
+            label.delete('all')
+            label.create_text(0,height/2,text=prefix,anchor='w',font=font,fill=label.attempt_color)
+            label.create_text(font.measure(prefix),height/2,text=total,anchor='w',font=font,fill='#ff727c')
+            label.place(x=x+offset,y=y,width=max(1,width-offset),height=height)
+
     def update_compare_icons(self):
         slots={key:index for index,key in enumerate(self.comparison_ids)} if len(self.comparison_ids)>1 else {}
         for row,attempt in self.row_attempts.items():
-            self.tree.item(row,image=self.compare_icons[slots[attempt.edit_id]] if attempt.edit_id in slots else '')
+            comparison=ATTEMPT_COLORS[slots[attempt.edit_id]][0] if attempt.edit_id in slots else None
+            star=is_best(attempt,self.scores.get(attempt.edit_id),self.best_scores)
+            key=('attempt',comparison,star)
+            if key not in self.attempt_icons:
+                image=Image.new('RGBA',(20,20));painter=ImageDraw.Draw(image)
+                if star:
+                    painter.polygon([(10,2),(12,7),(17,7),(13,10),(15,15),(10,12),(5,15),(7,10),(3,7),(8,7)],fill='#6cd9af')
+                if comparison:painter.line((3,18,17,18),fill=comparison,width=2)
+                self.attempt_icons[key]=ImageTk.PhotoImage(image,master=self)
+            self.tree.item(row,image=self.attempt_icons[key])
 
     def redraw(self,preserve_view=False):
         view=[(axis.get_xlim(),axis.get_ylim()) for axis in self.fig.axes] if preserve_view else []
         a=self.selected
         self.update_compare_icons()
-        self.wire_value.set(self.get_wire(a) if a else '')
+        wire=self.get_wire(a) if a else ''
+        self.wire_value.set(wire)
+        self.wire_label.configure(foreground='#ff727c' if a and not wire else TEXT)
         self.wire_select.configure(state='readonly' if a and not self.busy else 'disabled')
         origin=glide_origin_msl_ft(self.carrier,self.settings)
         compared=[];labels=[]
@@ -440,6 +519,26 @@ class WireJudge(tk.Tk):
             self.toolbar.push_current()
         self.graph_cursor.refresh();self.canvas.draw_idle()
 
+    def play_sound(self,event):
+        names={'save':'sound4','export':'sound5','load':'sound6','error':'sound7','wire':'sound8'}
+        self.sounds.play(names[event])
+
+    def show_error(self,*args,**kwargs):
+        self.play_sound('error')
+        return messagebox.showerror(*args,**kwargs)
+
+    def wire_shortcut(self,event):
+        if self.busy or self.selected is None or self.annotations is None:return
+        if self.pages.select()!=str(self.approach_page) or self.startup_splash is not None:return
+        focus=self.focus_get()
+        if focus is not None and focus.winfo_class() in ('Entry','TEntry','Text','TCombobox','Spinbox','TSpinbox'):return
+        if event.state & (4|8|128|0x20000):return
+        key=event.char.lower()
+        if key not in ('b','1','2','3','4'):return
+        self.wire_value.set('Bolter' if key=='b' else key)
+        self.set_wire()
+        return 'break'
+
     def get_wire(self,attempt):
         if attempt is None:return ''
         manual=self.annotations.find(self.carrier['id'],attempt) if self.carrier and self.annotations else None
@@ -449,14 +548,20 @@ class WireJudge(tk.Tk):
         if not self.selected or not self.annotations or self.busy:return
         try:self.annotations.set(self.carrier['id'],self.selected,self.wire_value.get())
         except (OSError,ValueError) as error:
-            self.wire_value.set(self.get_wire(self.selected));messagebox.showerror('Could not save wire',str(error),parent=self);return
-        self.populate();self.redraw();self.editor_page.refresh();self.status.set('Manual wire choice saved for this landing.')
+            self.wire_value.set(self.get_wire(self.selected));self.show_error('Could not save wire',str(error),parent=self);return
+        self.populate();self.redraw();self.editor_page.refresh();self.status.set('Manual wire choice saved for this landing.');self.play_sound('wire')
         if self.score_window and self.score_window.winfo_exists():self.score_window.refresh()
 
     def refresh_scores(self):
         origin=glide_origin_msl_ft(self.carrier,self.settings)
         self.scores={a.edit_id:score_attempt(a,self.get_wire(a),self.settings,origin) for a in self.attempts}
         self.best_scores=best_by_player(self.attempts,self.scores)
+        leaders=sorted(self.attempts,key=lambda a:(-self.scores[a.edit_id].total,-self.scores[a.edit_id].complete,a.start,a.player.casefold()))
+        self.player_crown_ranks={}
+        for attempt in leaders:
+            if attempt.player not in self.player_crown_ranks:
+                self.player_crown_ranks[attempt.player]=len(self.player_crown_ranks)
+                if len(self.player_crown_ranks)==3:break
 
     def page_changed(self,event=None):
         self.replay_map.set_active(self.pages.select()==str(self.replay_map))
@@ -481,7 +586,7 @@ class WireJudge(tk.Tk):
             if start is None or settings.scoring_changeover_nm>=start:raise ValueError('Glide End must be closer to the carrier than Glide Start for the selected case.')
             settings.save(SETTINGS_PATH)
         except (ValueError,OSError) as error:
-            self.case_value.set(f'Case {previous}');messagebox.showerror('Could not change recovery case',str(error),parent=self);return
+            self.case_value.set(f'Case {previous}');self.show_error('Could not change recovery case',str(error),parent=self);return
         self.settings=settings;self.selected=None;self.populate();self.redraw();self.update_settings_readouts();self.score_window.refresh()
         if self.carrier is not None:self.reanalyze()
         else:self.status.set(f'Case {chosen} selected.')
@@ -507,7 +612,7 @@ class WireJudge(tk.Tk):
         self.selected=None;self.comparison_ids=[]
         if self.carrier is not None:self.apply_edits();self.editor_page.reset()
         else:self.editor_page.reset();self.populate();self.redraw();self.score_window.refresh()
-        if errors:messagebox.showerror('Could not clear all cache files','\n'.join(errors),parent=self)
+        if errors:self.show_error('Could not clear all cache files','\n'.join(errors),parent=self)
         else:self.status.set('Replay annotations and attempt edits cleared.')
 
     def build_settings(self):
@@ -529,10 +634,17 @@ class WireJudge(tk.Tk):
             if key=='case1_glide_start_nm':return glide_start_nm(Settings(**{**asdict(settings),'recovery_case':1}),glide_origin_msl_ft(self.carrier,settings)) or 0
             return getattr(settings,key)
         self.auto_start_display=f'{displayed(self.settings,"case1_glide_start_nm"):.12g}'
+        self.setting_entries={};self.setting_labels={}
+        ttk.Style(self).configure('CustomPoints.TEntry',foreground='#ffe05c',fieldbackground='#514725',
+                                  bordercolor='#ffe05c',lightcolor='#ffe05c',darkcolor='#ffe05c',insertcolor='#ffe05c')
+        ttk.Style(self).map('CustomPoints.TEntry',bordercolor=[('focus','#ffe05c')],
+                           lightcolor=[('focus','#ffe05c')],darkcolor=[('focus','#ffe05c')])
         def entry(group,key,label,row,pady=6):
-            ttk.Label(group,text=label).grid(row=row,column=0,sticky='w',pady=pady)
+            text=ttk.Label(group,text=label);text.grid(row=row,column=0,sticky='w',pady=pady)
+            self.setting_labels[key]=text
             variable=tk.StringVar(value=f'{displayed(self.settings,key):.12g}');variables[key]=variable
-            ttk.Entry(group,textvariable=variable,width=12).grid(row=row,column=1,sticky='e',padx=(16,0),pady=pady)
+            field=ttk.Entry(group,textvariable=variable,width=12);field.grid(row=row,column=1,sticky='e',padx=(16,0),pady=pady)
+            self.setting_entries[key]=field
         self.opacity_sliders={}
         def setting_slider(group,key,label,row,color=GREEN,minimum=0,maximum=1,percent=True):
             ttk.Label(group,text=label,foreground=color).grid(row=row,column=0,sticky='w',pady=1)
@@ -550,17 +662,6 @@ class WireJudge(tk.Tk):
             if percent:self.opacity_sliders[key]=scale
             else:self.line_width_slider=scale
             ttk.Label(control,textvariable=percentage,width=5,anchor='e').grid(row=0,column=1,padx=(6,0))
-        def reset_start():
-            try:
-                values=asdict(self.settings)
-                for key in ('offset_x','offset_y','offset_z','runway_deg','glide_deg'):values[key]=float(variables[key].get())
-                geometry=Settings(**values)
-                if not .1<=geometry.glide_deg<=15:raise ValueError('Glide slope must be between 0.1° and 15°.')
-                start=target_intercept_nm(geometry,glide_origin_msl_ft(self.carrier,geometry))
-                if start is None or not 0<start<=10:raise ValueError('The configured carrier/glide geometry has no 600 ft intercept within 10 NM.')
-                variables['case1_glide_start_nm'].set(f'{start:.12g}')
-            except (ValueError,TypeError) as error:messagebox.showerror('Could not reset Glide Start',str(error),parent=self)
-        self.reset_case1_start=reset_start
         ttk.Style(self).configure('Square.TButton',padding=(4,3))
         self.reset_start_image=tk.PhotoImage(width=18,height=18)
         for y in range(18):
@@ -577,9 +678,6 @@ class WireJudge(tk.Tk):
             group=ttk.LabelFrame(general,text=heading,padding=(12,8));group.grid(row=section//2,column=section%2,sticky='new',padx=(0,12) if section%2==0 else 0,pady=(0,12));group.columnconfigure(0,weight=1)
             for i,(key,label) in enumerate(mapping.items()):
                 entry(group,key,label,i,pady=0 if heading=='Graph Settings' else 4 if heading=='CASE 3 Limits' else 6)
-                if key=='case1_glide_start_nm':
-                    self.case1_reset_btn=ttk.Button(group,image=self.reset_start_image,style='Square.TButton',command=reset_start)
-                    self.case1_reset_btn.grid(row=i,column=2,padx=(6,0))
             if heading=='Replay Settings':
                 group.columnconfigure(1,weight=1)
                 setting_slider(group,'replay_procedure_opacity','Procedure Markings',len(mapping),START_END_COLOR)
@@ -602,6 +700,9 @@ class WireJudge(tk.Tk):
         variables['random_animations'].trace_add('write',animation_toggle_style);animation_toggle_style()
         entry(application,'random_animation_frequency_sec','Random Animation Frequency (sec)',2)
         setting_slider(application,'animation_opacity','Animation Opacity',3,START_END_COLOR)
+        variables['sound_effects']=tk.BooleanVar(value=self.settings.sound_effects)
+        ttk.Checkbutton(application,text='Sound Effects',variable=variables['sound_effects']).grid(row=4,column=0,columnspan=2,sticky='w',pady=6)
+        setting_slider(application,'sound_volume','Sound Volume',5,TEXT)
         destinations=ttk.LabelFrame(application_page,text='Animations by Tab',padding=(16,12));destinations.pack(fill='x',pady=(16,0))
         for row,(key,label) in enumerate((('animation_approach','Approach Viewer'),('animation_scores','Scoreboard'),('animation_editor','Attempt Editor'),('animation_settings','Settings'))):
             variables[key]=tk.BooleanVar(value=getattr(self.settings,key))
@@ -639,7 +740,7 @@ class WireJudge(tk.Tk):
                 if not 0<half<=172:raise ValueError('AoA +/- must be positive and at most 172°.')
                 entered['show_graph_key']=bool(variables['show_graph_key'].get())
                 entered['show_timestamp']=bool(variables['show_timestamp'].get())
-                for key in ('random_animations','animation_approach','animation_scores','animation_editor','animation_settings'):
+                for key in ('sound_effects','random_animations','animation_approach','animation_scores','animation_editor','animation_settings'):
                     entered[key]=bool(variables[key].get())
                 values.update(entered);values.update(aoa_min_deg=8-half,aoa_max_deg=8+half);settings=Settings(**values);settings.validate()
                 target=glide_start_nm(settings,glide_origin_msl_ft(self.carrier,settings))
@@ -650,8 +751,12 @@ class WireJudge(tk.Tk):
                 temporary=AGREEMENT_PATH.with_suffix('.tmp')
                 temporary.write_text(json.dumps({'accepted':bool(variables['agreement'].get()),'app_version':APP_VERSION},indent=2))
                 temporary.replace(AGREEMENT_PATH)
-            except (ValueError,TypeError,OSError) as e:messagebox.showerror('Invalid settings',str(e),parent=self);return
-            self.settings=settings;self.points_value.set(settings.show_data_points);self.selected=None;self.redraw();self.status.set('Settings saved and applied.');readouts();self.score_window.refresh()
+            except (ValueError,TypeError,OSError) as e:self.show_error('Invalid settings',str(e),parent=self);return
+            self.settings=settings
+            if not settings.sound_effects or settings.sound_volume==0:
+                self.sounds.stop()
+            self.play_sound('save')
+            self.points_value.set(settings.show_data_points);self.selected=None;self.redraw();self.status.set('Settings saved and applied.');readouts();self.score_window.refresh()
             update_button_styles()
             if self.carrier is not None:self.reanalyze()
         def restore(settings):
@@ -661,6 +766,41 @@ class WireJudge(tk.Tk):
         self.clear_cache_btn=ttk.Button(buttons,text='Clear Cache',command=self.clear_cache);self.clear_cache_btn.pack(side='left',padx=8)
         self.reset_settings_btn=ttk.Button(buttons,text='Reset Changes',command=lambda:restore(self.settings));self.reset_settings_btn.pack(side='right')
         self.save_settings_btn=ttk.Button(buttons,text='Save & Apply',command=save);self.save_settings_btn.pack(side='right',padx=8)
+        self.setting_reset_buttons={};self.setting_variables=variables
+        defaults=Settings()
+        def add_setting_reset(group,key,row):
+            variable=variables[key]
+            default=True if key=='agreement' else displayed(defaults,key)
+            def reset():
+                variable.set(default if isinstance(variable,(tk.BooleanVar,tk.DoubleVar)) else f'{default:.12g}')
+            button=ttk.Button(group,image=self.reset_start_image,style='Square.TButton',command=reset)
+            button.grid(row=row,column=2,padx=(6,0),sticky='e')
+            group.columnconfigure(2,minsize=34)
+            def visibility(*_):
+                try:changed=abs(float(variable.get())-float(default))>1e-9
+                except (ValueError,TypeError,tk.TclError):changed=True
+                if changed:button.grid()
+                else:button.grid_remove()
+                if key.startswith('scoring_') and key.endswith('_points'):
+                    self.setting_labels[key].configure(foreground='#ffe05c' if changed else TEXT)
+                    self.setting_entries[key].configure(style='CustomPoints.TEntry' if changed else 'TEntry')
+            variable.trace_add('write',visibility);visibility()
+            self.setting_reset_buttons[key]=button
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        lookup={str(variable):key for key,variable in variables.items()}
+        for widget in descendants(self.settings_page):
+            kind=widget.winfo_class()
+            if kind not in ('TEntry','TScale','TCheckbutton'):continue
+            name=str(widget.cget('textvariable' if kind=='TEntry' else 'variable'))
+            key=lookup.get(name)
+            if key is None:continue
+            control=widget.master if kind=='TScale' else widget
+            info=control.grid_info()
+            if info:add_setting_reset(control.master,key,int(info['row']))
+        add_setting_reset(application,'random_animations',1)
         def update_button_styles(*_):
             try:changed=any(abs(float(variable.get())-float(displayed(self.settings,key)))>1e-10 for key,variable in variables.items())
             except (ValueError,TypeError,tk.TclError):changed=True

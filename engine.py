@@ -19,6 +19,8 @@ class Settings:
     start_end_opacity: float = 0.60
     show_graph_key: bool = True
     show_timestamp: bool = False
+    sound_effects: bool = True
+    sound_volume: float = 0.50
     random_animations: bool = True
     random_animation_frequency_sec: float = 60.0
     animation_opacity: float = 0.60
@@ -69,6 +71,7 @@ class Settings:
     case3_glide_start_nm: float = 2.25
 
     def validate(self):
+        if not 0<=self.sound_volume<=1:raise ValueError('Sound Volume must be between 0% and 100%.')
         if not 1<=self.random_animation_frequency_sec<=86400:raise ValueError('Random Animation Frequency must be between 1 and 86,400 seconds.')
         if not 0<=self.animation_opacity<=1:raise ValueError('Animation Opacity must be between 0% and 100%.')
         if not 0<=self.replay_procedure_opacity<=1:raise ValueError('Procedure Markings opacity must be between 0% and 100%.')
@@ -117,6 +120,11 @@ class Settings:
     def save(self,path):
         self.validate();p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
         tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(asdict(self),indent=2));tmp.replace(p)
+
+def point_values_are_default(settings):
+    defaults=Settings()
+    return all(abs(getattr(settings,key)-getattr(defaults,key))<=1e-9
+               for key in Settings.__dataclass_fields__ if key.startswith('scoring_') and key.endswith('_points'))
 
 def speed_deadzone_bounds(settings):
     """Center the ungraded band on 6 NM plus the shift; positive moves left."""
@@ -234,7 +242,7 @@ def velocity_from_positions(rows,max_gap=3,max_speed=650):
 
 BLACK_BOX_METRICS={'speed':('Speed','kt','#69b7ff'), 'aoa':('AoA','°','#8dd8ff'),
                    'vertical_speed':('Vertical Speed','ft/min','#438cff'), 'altitude':('Altitude','ft MSL','#d5b28a'),
-                   'bank':('Bank','°','#ff727c'), 'pitch':('Pitch','°','#ffe879'),
+                   'bank':('Bank','°','#ff727c'), 'pitch':('Pitch','°','#69b7ff'),
                    'loc':('Loc Offset','°','#ff9850'), 'glide':('Glide Offset','°','#b491ff')}
 
 def black_box_data(track,attempt,carrier=None,settings=None):

@@ -16,7 +16,18 @@ SPEED_ON='#ffe05c';SPEED_FAST='#ff5555';SPEED_SLOW='#62d98a'
 
 def aoa_outline(aoa):
     if not np.isfinite(aoa):return None
-    return SPEED_FAST if aoa<7 else SPEED_SLOW if aoa>9 else SPEED_ON
+    return SPEED_FAST if aoa<=7 else SPEED_SLOW if aoa>=9 else SPEED_ON
+
+def localizer_corridor_distance(settings,x,y):
+    """Inbound distance in NM when inside the displayed localizer corridor."""
+    angle=np.radians(settings.runway_deg)
+    x-=settings.offset_x/1852;y-=settings.offset_z/1852
+    distance=-(np.sin(angle)*x+np.cos(angle)*y)
+    lateral=np.cos(angle)*x-np.sin(angle)*y
+    maximum=10 if settings.recovery_case==3 else settings.graph_range_nm
+    if 0<distance<=maximum and abs(lateral)<=np.tan(np.radians(settings.localizer_tolerance_deg))*distance:
+        return distance
+    return None
 
 
 def slice_geometry(data,settings):
@@ -60,7 +71,9 @@ class ReplayGlide(ttk.Frame):
             if not self.ax.bbox.contains(px,py):continue
             gap=np.hypot(event.x-px,event.y-py)
             if gap<distance:closest=tracks[entity];distance=gap
-        if closest is not None:self.page.select_aircraft(closest['inspect_key'])
+        if closest is not None:
+            if closest['inspect_key']==self.page.inspector.selected:self.page.set_follow(True)
+            self.page.select_aircraft(closest['inspect_key'])
 
     def layout(self):
         width,height=self.fig.get_size_inches()*self.fig.dpi
@@ -90,7 +103,7 @@ class ReplayGlide(ttk.Frame):
         self.layout()
         self.artists={};self.geometry={}
         for data in self.page.data:
-            if data['category'] in ('missile','bullet'):continue
+            if data['category'] in ('missile','bullet','sam'):continue
             color='#ff5575' if data['category']=='enemy' else self.page.colors[data['flight']]
             line=LineCollection([],linewidths=settings.graph_line_width);ax.add_collection(line)
             marker,=ax.plot([],[],color=color,marker='^',markersize=6,ls='')
@@ -104,7 +117,7 @@ class ReplayGlide(ttk.Frame):
         if signature!=self.signature:self.build()
         settings=self.page.app.settings;cursor=self.page.cursor;occupied=False
         for data in self.page.data:
-            if data['category'] in ('missile','bullet'):continue
+            if data['category'] in ('missile','bullet','sam'):continue
             distance,lateral,altitude=self.geometry[data['entity']];t=data['time']
             enabled=self.page.enemy_visible if data['category']=='enemy' else self.page.members.get(data['member'],True)
             current=enabled and t[0]<=cursor<=t[-1]

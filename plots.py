@@ -1,6 +1,7 @@
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.path import Path
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.ticker import Locator,MaxNLocator,FuncFormatter,MultipleLocator
 from engine import glide_start_nm,approach_reference,speed_deadzone_bounds,clock,BLACK_BOX_METRICS
@@ -12,6 +13,28 @@ ATTEMPT_COLORS=(('#69b7ff','#8dd8ff'),('#ff727c','#ffb2b8'),('#9f80ff','#f7a9e8'
 MAX_COMPARE_ATTEMPTS=len(ATTEMPT_COLORS)
 START_END_COLOR='#c4a1ff'
 CURSOR_COLOR='#ff8c8c'
+PITCH_BELOW_COLOR='#b98558'
+HSI_COLOR='#ffe879'
+
+def pitch_line_data(x,y):
+    """Split pitch at interpolated zero crossings, preserving sample gaps."""
+    x=np.asarray(x,dtype=float);y=np.asarray(y,dtype=float)
+    crossings=np.flatnonzero(np.isfinite(y[:-1])&np.isfinite(y[1:])&(y[:-1]*y[1:]<0))
+    if len(crossings):
+        fraction=-y[crossings]/(y[crossings+1]-y[crossings])
+        zeros=x[crossings]+fraction*(x[crossings+1]-x[crossings])
+        x=np.insert(x,crossings+1,zeros);y=np.insert(y,crossings+1,0.)
+    return x,np.where(y>=0,y,np.nan),np.where(y<=0,y,np.nan)
+
+def diagnostic_reference_line(ax,key):
+    return ax.axhline(AOA_TARGET_DEG if key=='aoa' else 0.,
+                      color=MUTED,lw=.8,alpha=.75,zorder=1,gid='diagnostic-reference')
+
+def timestamp_button_box(x0,y0,width,height,mutation_size):
+    # Only enclose the timestamp (lower line), leaving distance labels plain.
+    pad=mutation_size*.18;x=x0-pad;y=y0+mutation_size*.2-pad;w=width+2*pad;h=height*.48+2*pad
+    return Path([(x,y),(x+w,y),(x+w,y+h),(x,y+h),(x,y)],
+                [Path.MOVETO,Path.LINETO,Path.LINETO,Path.LINETO,Path.CLOSEPOLY])
 
 def sample_at_distance(distance,time,values,target):
     distance=np.asarray(distance);time=np.asarray(time)
@@ -42,7 +65,13 @@ class ApproachCursor:
         axes=[ax for ax in self.canvas.figure.axes if hasattr(ax,'_cursor_series')]
         if self.distance is None or attempt is None or not axes:return
         for ax in axes:
-            self.artists.append(ax.axvline(self.distance,color=CURSOR_COLOR,lw=1,zorder=20))
+            overlay=getattr(ax,'_cursor_overlay_axis',ax)
+            self.artists.append(overlay.axvline(self.distance,color=CURSOR_COLOR,lw=1,zorder=20))
+            for edge,marker in ((0,'^'),(1,'v')):
+                triangle,=overlay.plot([self.distance],[edge],transform=ax.get_xaxis_transform(),
+                                 marker=marker,ms=5,color=CURSOR_COLOR,ls='none',
+                                 clip_on=False,zorder=22,gid='cursor-triangle')
+                triangle.set_in_layout(False);self.artists.append(triangle)
             grouped={}
             for label,unit,x,t,y in ax._cursor_series:
                 sample=sample_at_distance(x,t,y,self.distance)
@@ -61,7 +90,7 @@ class ApproachCursor:
         self.stamp=bottom.annotate(clock(self.timestamp) if self.timestamp is not None else '—',
             xy=(self.distance,0),xycoords=('data','axes fraction'),xytext=(0,-42 if timestamps else -30),
             textcoords='offset points',ha='center',va='top',color=CURSOR_COLOR,fontsize=10,
-            bbox=dict(facecolor=BG,edgecolor='none',pad=1),zorder=22,annotation_clip=True)
+            bbox=dict(facecolor=BG,edgecolor=CURSOR_COLOR,linewidth=.7,boxstyle='square,pad=0.2'),zorder=22,annotation_clip=True)
         self.artists.append(self.stamp)
 
     def click(self,event):
@@ -159,6 +188,7 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
     for ax in axes:ax._cursor_series=[]
     aoa_ax=axes[2].twinx()
     aoa_ax.set_zorder(axes[2].get_zorder()+1)
+    axes[2]._cursor_overlay_axis=aoa_ax
     aoa_ax.patch.set_visible(False)
     for ax in list(axes)+[aoa_ax]:
         ax.set_facecolor(PANEL);ax.tick_params(colors=MUTED,labelsize=9)
@@ -214,8 +244,8 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
             if start<=end:continue
             ax.fill_between([end,start],target-limit,target+limit,color=GREEN,alpha=settings.limit_shading_opacity)
             ax.plot([end,start],[target,target],color=GREEN,alpha=settings.limit_center_opacity,lw=1.3)
-        ax.set_title(f'Groundspeed / AoA - {settings.case3_leg1_speed_knots:g} / {settings.case3_leg2_speed_knots:g} knots · 8° Targets',color=TEXT,loc='left',fontsize=11)
-        ax.set_ylabel('Groundspeed (knots)',color=speed_axis_color);ax.set_ylim(max(0,min(settings.case3_leg1_speed_knots,settings.case3_leg2_speed_knots)-limit-20),max(settings.case3_leg1_speed_knots,settings.case3_leg2_speed_knots)+limit+20)
+        ax.set_title(f'Speed / AoA - {settings.case3_leg1_speed_knots:g} / {settings.case3_leg2_speed_knots:g} knots · 8° Targets',color=TEXT,loc='left',fontsize=11)
+        ax.set_ylabel('Speed (knots)',color=speed_axis_color);ax.set_ylim(max(0,min(settings.case3_leg1_speed_knots,settings.case3_leg2_speed_knots)-limit-20),max(settings.case3_leg1_speed_knots,settings.case3_leg2_speed_knots)+limit+20)
         if settings.case3_speed_deadzone_nm>0:
             ax.axvspan(near,far,color=MUTED,alpha=.14,zorder=1)
         ax.tick_params(axis='y',colors=speed_axis_color);aoa_ax.tick_params(axis='y',colors=aoa_axis_color);aoa_ax.yaxis.label.set_color(aoa_axis_color)
@@ -223,10 +253,10 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         for axis in axes:
             axis.axvline(6,color=MUTED,ls=':',lw=.7)
     else:
-        axes[2].set_ylabel('Groundspeed (knots)',color=speed_axis_color);axes[2].set_ylim(0,350)
+        axes[2].set_ylabel('Speed (knots)',color=speed_axis_color);axes[2].set_ylim(0,350)
         axes[2].tick_params(axis='y',colors=speed_axis_color);aoa_ax.tick_params(axis='y',colors=aoa_axis_color);aoa_ax.yaxis.label.set_color(aoa_axis_color)
         aoa_ax.axhline(8,color=GREEN,alpha=settings.limit_center_opacity,lw=1.3,label='8° target')
-        axes[2].set_title('Groundspeed / AoA - 8° Target',color=TEXT,loc='left',fontsize=11)
+        axes[2].set_title('Speed / AoA - 8° Target',color=TEXT,loc='left',fontsize=11)
     key_labels=[];path_keys=[];paired_keys=[]
     for index,attempt in enumerate(attempts):
         path_color,aoa_color=ATTEMPT_COLORS[index]
@@ -267,17 +297,17 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         if case3 and attempt.groundspeed_knots is not None:
             speed_x,speed_y=phase_values(nm,attempt.groundspeed_knots,intercept,True)
             line,=axes[2].plot(speed_x,speed_y,color=path_color,lw=settings.graph_line_width);line.set_gid('groundspeed-track')
-            if comparing and not any(visible_graphs[:2]):line.set_label(label+' · Groundspeed')
+            if comparing and not any(visible_graphs[:2]):line.set_label(label+' · Speed')
             after_x,after_y=phase_values(nm,attempt.groundspeed_knots,intercept,False)
             line,=axes[2].plot(after_x,after_y,color=path_color,lw=settings.graph_line_width,ls='--',alpha=.5,zorder=2)
             line.set_gid('groundspeed-after-glide')
             if settings.show_data_points:
                 keep=mask&(nm>=intercept)&np.isfinite(attempt.groundspeed_knots)
-                axes[2].scatter(nm[keep],attempt.groundspeed_knots[keep],s=13,color=path_color,edgecolors=BG,linewidths=.4,zorder=8,label='Groundspeed samples')
+                axes[2].scatter(nm[keep],attempt.groundspeed_knots[keep],s=13,color=path_color,edgecolors=BG,linewidths=.4,zorder=8,label='Speed samples')
         elif not case3 and attempt.groundspeed_knots is not None:
             line,=axes[2].plot(nm,attempt.groundspeed_knots,color=path_color,lw=settings.graph_line_width,ls='--',alpha=.5,zorder=2)
             line.set_gid('groundspeed-track')
-            if comparing and not any(visible_graphs[:2]):line.set_label(label+' · Groundspeed')
+            if comparing and not any(visible_graphs[:2]):line.set_label(label+' · Speed')
         finite=np.flatnonzero(np.isfinite(attempt.aoa))
         for left,right in zip(finite[:-1],finite[1:]):
             if right>left+1 or attempt.time[right]-attempt.time[left]>3:
@@ -315,6 +345,7 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         minimum_steps={'speed':1,'aoa':.5,'vertical_speed':50,'altitude':10,'bank':1,'pitch':1,'loc':1,'glide':1}
         for ax,key in zip(axes[3:],black_keys):
             label,unit,color=BLACK_BOX_METRICS[key]
+            diagnostic_reference_line(ax,key)
             ax.set_ylabel(label+'\n'+unit,color=color,fontsize=8)
             ax.tick_params(axis='y',colors=color,labelsize=8)
             ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
@@ -322,8 +353,15 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
                 x=black_box['distance'];y=black_box[key]
                 valid=np.isfinite(x)&np.isfinite(y)
                 ax._cursor_series.append((label,unit,x[valid],black_box['time'][valid],y[valid]))
-                ax.plot(x[valid],y[valid],color=color,ls='--' if unit=='°' else '-',lw=settings.graph_line_width,label=label)
-                if settings.show_data_points:ax.scatter(x[valid],y[valid],s=9,color=color)
+                if key=='pitch':
+                    px,above,below=pitch_line_data(x[valid],y[valid])
+                    ax.plot(px,above,color=color,ls='--',lw=settings.graph_line_width,label=label)
+                    ax.plot(px,below,color=PITCH_BELOW_COLOR,ls='--',lw=settings.graph_line_width)
+                else:
+                    ax.plot(x[valid],y[valid],color=color,ls='--' if unit=='°' else '-',lw=settings.graph_line_width,label=label)
+                if settings.show_data_points:
+                    colors=np.where(y[valid]<0,PITCH_BELOW_COLOR,color) if key=='pitch' else color
+                    ax.scatter(x[valid],y[valid],s=9,color=colors)
                 finite=np.asarray(y)[np.isfinite(y)]
                 if len(finite):
                     center=(min(finite)+max(finite))/2;spread=max(minimum_ranges[key],np.ptp(finite)*1.1)
@@ -365,6 +403,9 @@ def draw(fig,attempt,settings,origin_msl_ft=None,labels=None,visible_graphs=None
         bottom=visible_axes[-1]
         def timestamp_label(distance,position):
             time=latest_sample_time(attempts,distance)
+            ticks=bottom.xaxis.get_major_ticks()
+            if position is not None and 0<=position<len(ticks):
+                ticks[position].label1.set_bbox(dict(facecolor=BG,edgecolor=MUTED,linewidth=.6,boxstyle=timestamp_button_box) if time is not None else None)
             return f'{distance:g}\n'+(clock(time) if time is not None else '')
         bottom.xaxis.set_major_locator(TimestampLocator())
         bottom.xaxis.set_major_formatter(FuncFormatter(timestamp_label))

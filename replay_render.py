@@ -1,4 +1,6 @@
 """Cached static backgrounds for moving replay artists."""
+from matplotlib.collections import LineCollection,PathCollection
+from matplotlib.lines import Line2D
 class ReplayRenderer:
     def __init__(self,canvas):
         self.canvas=canvas;self.background=None;self.artists=[];self.axes=None;self.axis_connections=[]
@@ -8,7 +10,7 @@ class ReplayRenderer:
     def configure(self,axes,artists):
         if self.axes is not None:
             for connection in self.axis_connections:self.axes.callbacks.disconnect(connection)
-        self.axes=axes;self.artists=list(artists)
+        self.axes=axes;self.artists=sorted(artists,key=lambda artist:artist.get_zorder())
         for artist in self.artists:artist.set_animated(True)
         self.axis_connections=[axes.callbacks.connect(event,lambda ax:self.invalidate()) for event in ('xlim_changed','ylim_changed')]
         self.background=None
@@ -25,6 +27,10 @@ class ReplayRenderer:
         if self.background is None:
             self.canvas.draw_idle();return
         self.canvas.restore_region(self.background)
-        for artist in sorted(self.artists,key=lambda artist:artist.get_zorder()):
-            if artist.get_visible():self.axes.draw_artist(artist)
+        for artist in self.artists:
+            if not artist.get_visible():continue
+            if isinstance(artist,LineCollection) and not artist.get_paths():continue
+            if isinstance(artist,PathCollection) and not len(artist.get_offsets()):continue
+            if isinstance(artist,Line2D) and not len(artist.get_xdata()):continue
+            self.axes.draw_artist(artist)
         self.canvas.blit(self.canvas.figure.bbox)
