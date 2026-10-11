@@ -17,6 +17,7 @@ from editor import AttemptEditorPage
 from scoring import score_attempt,best_by_player,is_best,maximum,approach_maximum
 from score_window import ScoreWindow
 from replay_map import ReplayMapPage
+from game_map import GameMapPage
 
 SETTINGS_PATH=Path.home()/'.wire_judge'/'settings.json'
 ANNOTATIONS_DIR=Path.home()/'.wire_judge'/'annotations'
@@ -88,6 +89,7 @@ class WireJudge(tk.Tk):
         self.score_window=ScoreWindow(self,self.pages);self.pages.add(self.score_window,text='Scoreboard')
         self.editor_page=AttemptEditorPage(self,self.pages);self.pages.add(self.editor_page,text='Attempt Editor')
         self.replay_map=ReplayMapPage(self,self.pages);self.pages.insert(self.score_window,self.replay_map,text='Replay Map')
+        self.game_map=GameMapPage(self,self.pages);self.pages.add(self.game_map,text='Game')
         self.pages.add(self.settings_page,text='Settings')
         body=ttk.Panedwindow(self.approach_page,orient='horizontal');body.pack(fill='both',expand=True)
         left=ttk.Frame(body,padding=(0,4,12,4));right=ttk.Frame(body);body.add(left,weight=1);body.add(right,weight=4)
@@ -565,6 +567,7 @@ class WireJudge(tk.Tk):
 
     def page_changed(self,event=None):
         self.replay_map.set_active(self.pages.select()==str(self.replay_map))
+        self.game_map.set_active(self.pages.select()==str(self.game_map))
         if self.pages.select()==str(self.score_window):self.score_window.refresh()
         elif self.pages.select()==str(self.approach_page):self.after_idle(self.sync_figure_size)
         elif self.pages.select()==str(self.editor_page):self.editor_page.refresh()
