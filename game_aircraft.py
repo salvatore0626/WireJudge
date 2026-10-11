@@ -109,7 +109,7 @@ class Aircraft:
     def max_health(self):return 35 if self.kind in ('Drone','RQ-9B') else 50 if self.enemy else 100
 
     @property
-    def visual_range_nm(self):return 100. if self.kind=='RQ-9B' else 15.
+    def visual_range_nm(self):return 250. if self.kind=='AWACS' else 100. if self.kind=='RQ-9B' else 15.
 
     @property
     def can_refuel(self):return self.kind in ('Fighter','Bomber','Interceptor','RQ-9B')

@@ -46,9 +46,15 @@ class Factory:
     health: float = 50.
     category: str = 'Ground'
     name: str = 'Factory'
+    enemy: bool = True
 
     @property
     def alive(self):return self.health>0
+
+@dataclass(eq=False)
+class Bunker(Factory):
+    health: float = 500.
+    name: str = 'Bunker'
 
 @dataclass
 class Bomb:
@@ -150,6 +156,7 @@ class Bullet:
 class CombatWorld:
     def __init__(self,seed=None):
         self.factories=[];self.enemies=[]
+        self.events=[];self.kill_ids=set();self.unit_states={};self.visible_ground_contacts=set()
         self.bombs=[];self.missiles=[];self.flares=[];self.explosions=[]
         self.known=set();self.known_wrecks=set();self.contacts={False:{},True:{}}
         self.radars=[];self.sams=[];self.ciws=[];self.bullets=[];self.rng=random.Random(seed);self.last_advance=0.
@@ -158,6 +165,40 @@ class CombatWorld:
         self.attacker_reveals={False:{},True:{}}
         self.ground_targets=[]
         self.enemy_radars=[];self.enemy_sams=[];self.known_ground=set()
+
+    def unit_name(self,unit):
+        if isinstance(unit,Aircraft):
+            index=next((i+1 for i,a in enumerate(self.enemies) if a is unit),unit.parking_slot+1)
+            return f'{"Enemy " if unit.enemy else ""}{unit.kind} #{index}'
+        return f'{getattr(unit,"name",type(unit).__name__)} #{getattr(unit,"id","")}'.strip()
+
+    def record_kill(self,owner,target,now):
+        if target.alive or getattr(target,'kill_recorded',False):return
+        target.kill_recorded=True
+        self.kill_ids.add(id(target))
+        reward=0
+        if not getattr(owner,'enemy',False) and getattr(target,'enemy',False):
+            if isinstance(target,Bunker):reward=1000
+            elif isinstance(target,Factory):reward=100
+            elif isinstance(target,Aircraft):reward={'Fighter':200,'Interceptor':200,'Drone':75,'RQ-9B':75}.get(target.kind,0)
+            elif hasattr(target,'radar_emitting') or hasattr(target,'accepts_target'):reward=150
+        self.events.append((now,f'{self.unit_name(owner)} killed {self.unit_name(target)}',reward,'kill'))
+
+    def track_unit_states(self,aircraft,now):
+        units=[*aircraft,*self.sams,*self.enemy_sams,*self.ciws]
+        for unit in units:
+            if not unit.alive or getattr(unit,'enemy',False):continue
+            mode=getattr(unit,'mode',None)
+            armed=(isinstance(unit,Aircraft) and unit.kind in ('Fighter','Interceptor','Bomber')) or hasattr(unit,'ammo')
+            empty=armed and (unit.missiles_available+unit.bombs_available==0 if isinstance(unit,Aircraft) else unit.ammo==0)
+            old=self.unit_states.get(id(unit),(None,False))
+            if mode=='rtb' and old[0]!='rtb':self.events.append((now,f'{self.unit_name(unit)} is RTB',0,'status'))
+            if empty and not old[1]:self.events.append((now,f'{self.unit_name(unit)} is Winchester (out of ammo)',0,'status'))
+            self.unit_states[id(unit)]=(mode,empty)
+
+    def spawn_bunker(self,x,y):
+        target=Bunker(len(self.factories)+1,x,y)
+        self.factories.append(target);return target
 
     def spawn_factory(self,x,y):
         target=Factory(len(self.factories)+1,x,y)
@@ -194,13 +235,15 @@ class CombatWorld:
                 self.attacker_reveals[missile.target.enemy][id(missile.owner)]=(missile.owner,now+30.)
         alive=[a for a in aircraft if a.alive]
         friendly=[a for a in alive if not a.enemy];hostile=[a for a in alive if a.enemy]
+        self.visible_ground_contacts=set()
         for target in self.factories:
-            if target.alive and any(a.visual_detects(target.x,target.y) for a in friendly):self.known.add(target.id)
+            if target.alive and any(a.visual_detects(target.x,target.y) for a in friendly):
+                self.known.add(target.id);self.visible_ground_contacts.add(id(target))
         for target in [*self.enemy_radars,*self.enemy_sams]:
             if target.alive and any(a.visual_detects(target.x,target.y) or
                 (a.sensors_active and a.missile_inventory.get('HARM',0) and getattr(target,'radar_emitting',False)
                  and math.hypot(target.x-a.x,target.y-a.y)<=HARM_LAUNCH_RANGE) for a in friendly):
-                self.known_ground.add(id(target))
+                self.known_ground.add(id(target));self.visible_ground_contacts.add(id(target))
         for team,observers,targets in ((False,friendly,hostile),(True,hostile,friendly)):
             contacts=self.contacts[team]
             reveals=self.attacker_reveals[team]
@@ -248,6 +291,7 @@ class CombatWorld:
         return None
 
     def prepare(self,aircraft,now):
+        self.friendly_aircraft=[a for a in aircraft if not a.enemy]
         self.discover(aircraft,now)
         self.launch_sams(now)
         busy_ground={id(b.target) for b in self.bombs}|{id(m.target) for m in self.missiles if m.kind=='HARM'}
@@ -448,6 +492,7 @@ class CombatWorld:
                     damage=self.rng.randint(60,80) if m.kind=='HARM' else self.rng.randint(45,65)
                     target.health=max(0.,target.health-damage)
                     if target.health<=0 and isinstance(target,Aircraft):target.destroy()
+                    self.record_kill(m.owner,target,now)
                 else:target.alive=False
                 self.explode_missile(m,now);return False
         if m.travelled>=m.range_nm-1e-9 or (m.speed<100 and age>m.boost_duration):
@@ -495,6 +540,7 @@ class CombatWorld:
                     pos=hit.position(now) if not isinstance(hit,Aircraft) else (hit.x,hit.y)
                     self.explosions.append((now,*pos,'#ffe9a0'))
                     if isinstance(hit,Aircraft):hit.destroy()
+                    self.record_kill(bullet.owner,hit,now)
             elif bullet.travelled<3.5:remaining.append(bullet)
         self.bullets=remaining
 
@@ -507,6 +553,7 @@ class CombatWorld:
                 and target is not None and not isinstance(target,Aircraft) and target.alive
                 and math.hypot(drone.x-target.x,drone.y-target.y)<=HIT_RADIUS):
                 target.health=max(0,target.health-self.rng.randint(30,60))
+                self.record_kill(drone,target,now)
                 self.explosions.append((now,drone.x,drone.y,'#ffe66d'))
                 drone.destroy()
         remaining=[]
@@ -517,6 +564,7 @@ class CombatWorld:
                 if bomb.target.alive and math.hypot(x-bomb.target.x,y-bomb.target.y)<=.18:
                     damage=round(BOMB_DAMAGE[bomb.weight]*self.rng.uniform(.85,1.15))
                     bomb.target.health=max(0,bomb.target.health-damage)
+                    self.record_kill(bomb.owner,bomb.target,now)
                 bomb.health=0.
                 self.explosions.append((now,x,y,'#87caff'))
             else:remaining.append(bomb)
@@ -542,3 +590,4 @@ class CombatWorld:
         self.missiles=airborne_missiles
         self.flares=[f for f in self.flares if f.alive]
         self.explosions=[e for e in self.explosions if now-e[0]<1.]
+        self.track_unit_states([*getattr(self,"friendly_aircraft",()),*self.enemies],now)
