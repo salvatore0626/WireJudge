@@ -1,10 +1,16 @@
 """Shared game configuration schema and validation; safe to import without loading a file."""
 import json
+import sys
 from copy import deepcopy
 import math
 from pathlib import Path
 
+# PyInstaller's __file__ points into the extracted bundle. Prefer an editable
+# config beside the EXE when present; otherwise use the bundled default.
 STATS_PATH = Path(__file__).resolve().with_name('game_stats.json')
+if getattr(sys,'frozen',False):
+    _external_stats=Path(sys.executable).resolve().with_name('game_stats.json')
+    if _external_stats.is_file():STATS_PATH=_external_stats
 
 # Shape and types only: balance values live exclusively in the JSON.
 SCHEMA = {'friendly_aircraft': {'RQ-9B': {'health': 'positive',
@@ -417,6 +423,38 @@ def _validate(value, rule, path):
 AUDIO_DEFAULTS={'enabled': True, 'master_volume': 1.0, 'full_volume_zoom_nm': 10, 'quiet_zoom_nm': 75, 'quiet_volume': 0.1, 'barely_audible_zoom_nm': 100, 'barely_audible_volume': 0.02, 'max_voices': 16, 'events': {'ciws_fire': {'file': 'game_ciws_fire', 'volume': 0.6, 'cooldown_seconds': 0.08}, 'flak_fire': {'file': 'game_flak_fire', 'volume': 0.85, 'cooldown_seconds': 0.06}, 'flak_burst': {'file': 'game_flak_burst', 'volume': 0.65, 'cooldown_seconds': 0.04}, 'aircraft_missile': {'file': 'game_aircraft_missile', 'volume': 0.75, 'cooldown_seconds': 0.05}, 'missile_explosion': {'file': 'game_missile_explosion', 'volume': 0.8, 'cooldown_seconds': 0.05}, 'icbm_launch': {'file': 'game_icbm_launch', 'volume': 0.9, 'cooldown_seconds': 0.3}, 'bomb_250': {'file': 'game_bomb_250', 'volume': 0.55, 'cooldown_seconds': 0.06}, 'bomb_500': {'file': 'game_bomb_500', 'volume': 0.7, 'cooldown_seconds': 0.06}, 'bomb_1000': {'file': 'game_bomb_1000', 'volume': 0.85, 'cooldown_seconds': 0.06}, 'bomb_2000': {'file': 'game_bomb_2000', 'volume': 1.0, 'cooldown_seconds': 0.06}, 'buy_aircraft': {'file': 'game_buy_aircraft', 'volume': 0.75, 'cooldown_seconds': 0}, 'place_unit': {'file': 'game_place_unit', 'volume': 0.7, 'cooldown_seconds': 0}, 'upgrade': {'file': 'game_upgrade', 'volume': 0.85, 'cooldown_seconds': 0}}}
 
 
+def apply_balance_update(data):
+    """One-time requested balance changes when migrating old SAM missile names."""
+    weapons={'AIM-120':(60,.05),'AIM-9':(40,.40),'MIM-23':(100,.20),'MIM-104':(150,.20),
+             'PAC-3 MSE':(200,.25),'Sidearm':(35,.10),'AGM-88':(75,.05)}
+    bombs={'250':(20,.15),'500':(50,.10),'1000':(150,.08),'2000':(500,.20)}
+    for group,values in (('missiles',weapons),('bombs',bombs)):
+        for kind,(damage,spread) in values.items():
+            if kind in data.get(group,{}):
+                data[group][kind].update(damage=damage,damage_spread_fraction=spread)
+    health={'Factory':15,'Bunker':50,'Radar':15,'LR Radar':25,'CIWS':15,'Flak':20,
+            'SAAW':20,'SAM':20,'LR SAM':25,'Drone Launcher':20,'ICBM Silo':150}
+    for group in ('ground_units','enemy_ground_units'):
+        for kind,spec in data.get(group,{}).items():
+            if kind in health:spec['health']=health[kind]
+            if kind in ('Radar','LR Radar'):spec['range_nm']=40 if kind=='Radar' else 60
+            if kind in ('SAM','LR SAM','PAC-3'):
+                minimum,maximum={'SAM':(4,32),'LR SAM':(6,60),'PAC-3':(10,75)}[kind]
+                spec.update(min_engagement_range_nm=minimum,range_nm=maximum)
+    for kind,maximum in (('MIM-23',32),('MIM-104',60),('PAC-3 MSE',75)):
+        if kind in data.get('missiles',{}):data['missiles'][kind].update(launch_range_nm=maximum,max_range_nm=maximum)
+    for kind,count in (('AIM-120',2),('AIM-9',3)):
+        if kind in data.get('missiles',{}):data['missiles'][kind]['hardpoint_count']=count
+        for group in ('friendly_aircraft','enemy_aircraft'):
+            for spec in data.get(group,{}).values():
+                counts=spec.get('hardpoint_loadout_counts',{})
+                if kind in counts:counts[kind]=count
+    for group in ('default_loadouts','enemy_default_loadouts'):
+        for loadout in data.get(group,{}).values():
+            loadout['hardpoints']=['2× AIM-120C' if 'AIM-120' in v else '3× AIM-9' if 'AIM-9' in v else v for v in loadout.get('hardpoints',[])]
+    return data
+
+
 def migrate_stats(data):
     """Accept older balance files without discarding customized values."""
     data.setdefault('audio',deepcopy(AUDIO_DEFAULTS))
@@ -425,8 +463,17 @@ def migrate_stats(data):
     data['audio']['events'].setdefault('radar_ping',deepcopy(AUDIO_DEFAULTS['events']['radar_ping']))
     for key in ('center_falloff_enabled','edge_volume','silence_distance_frames','center_falloff_exponent'):
         data['audio'].setdefault(key,AUDIO_DEFAULTS[key])
+    for key,value in {'command_turn_speed_fraction':0.65,'command_turn_angle_degrees':10,'command_turn_deceleration_knots_per_second':20,'fast_turn_multiplier':1.1}.items():
+        data.get('aircraft_behavior',{}).setdefault(key,value)
+    data.get('world',{}).setdefault('coverage_refresh_seconds',0.5)
     data.get('missile_behavior',{}).setdefault('anti_radar_shutdown_scatter_nm_per_nm',0.12)
     missiles=data.get('missiles',{})
+    if 'AIM-120' in missiles:missiles['AIM-120'].setdefault('pitbull_range_nm',10)
+    rebalance='SAM' in missiles or 'LR SAM' in missiles
+    for old,new in (('SAM','MIM-23'),('LR SAM','MIM-104')):
+        if old in missiles:
+            if new in missiles:raise ValueError(f'Use only {new}, not both {old} and {new}')
+            missiles[new]=missiles.pop(old)
     if 'HARM' in missiles:
         if 'AGM-88' in missiles:raise ValueError('Use only AGM-88, not both HARM and AGM-88')
         missiles['AGM-88']=missiles.pop('HARM')
@@ -446,6 +493,7 @@ def migrate_stats(data):
             flak.setdefault('radar_range_nm',flak.pop('visual_range_nm'))
     saaw=data.get('enemy_ground_units',{}).get('SAAW')
     if saaw is not None:saaw.setdefault('radar_range_nm',saaw.get('range_nm',8))
+    if rebalance:apply_balance_update(data)
     return data
 
 
@@ -481,6 +529,7 @@ def load_stats(path=STATS_PATH):
         for group,key in (('ground_crew','crews_by_level'),('logistics','helicopters_by_level'),('upgrades','hangars_by_level'),('upgrades','power_capacity_by_level')):
             values=data[group][key]
             if values!=sorted(values):raise ValueError(f'{group}.{key}: values must not decrease with upgrades')
+        if not 0<data['aircraft_behavior']['command_turn_speed_fraction']<=1:raise ValueError('command_turn_speed_fraction must be greater than 0 and at most 1')
         if not 0<data['aircraft_behavior']['defensive_speed_min_fraction']<=data['aircraft_behavior']['defensive_speed_max_fraction']:raise ValueError('defensive speed fractions must be positive and minimum must not exceed maximum')
         for key in ('normal_bank_degrees','combat_bank_degrees'):
             if data['aircraft_behavior'][key]>=89:raise ValueError(f'aircraft_behavior.{key}: must be below 89 degrees')
@@ -582,3 +631,10 @@ AUDIO_DEFAULTS.update({'center_falloff_enabled': True, 'edge_volume': 0.25, 'sil
 SCHEMA['audio'].update({'center_falloff_enabled':'boolean','edge_volume':'fraction','silence_distance_frames':'positive','center_falloff_exponent':'positive'})
 AUDIO_DEFAULTS['events']['radar_ping']={'file':'sound9','volume':1.0,'cooldown_seconds':0.06}
 SCHEMA['audio']['events']['radar_ping']={'file':'text','volume':'fraction','cooldown_seconds':'number'}
+
+SCHEMA['aircraft_behavior'].update({'command_turn_speed_fraction':'fraction','command_turn_angle_degrees':'positive','command_turn_deceleration_knots_per_second':'positive','fast_turn_multiplier':'positive'})
+SCHEMA['world']['coverage_refresh_seconds']='positive'
+
+SCHEMA['missiles']['MIM-23']=SCHEMA['missiles'].pop('SAM')
+SCHEMA['missiles']['MIM-104']=SCHEMA['missiles'].pop('LR SAM')
+SCHEMA['missiles']['AIM-120']['pitbull_range_nm']='positive'

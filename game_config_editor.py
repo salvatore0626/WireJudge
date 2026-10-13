@@ -12,12 +12,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from game_config import SCHEMA, STATS_PATH, load_stats
+from game_campaign_comparison import CampaignComparison
 
 
 def label(key):
     special = {'cms': 'Countermeasures', 'icbm': 'ICBM', 'ground_units': 'Friendly ground units',
                'tiers': 'Campaign bands', 'default_loadouts': 'Friendly default loadouts'}
-    return special.get(str(key), str(key).replace('_', ' ').capitalize())
+    return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize())
 
 
 def get_at(data, path):
@@ -285,6 +286,7 @@ class ConfigEditor(tk.Tk):
             return
         self.heading.configure(text=' / '.join(f'Band {p+1}' if isinstance(p,int) else label(p) for p in path))
         ttk.Button(self.actions,text='Reset this group',command=self.reset_group).pack(side='left')
+        if path[0]=='campaign':ttk.Button(self.actions,text='Compare Bands',command=self.compare_campaign).pack(side='left',padx=6)
         if path[:2]==('campaign','tiers'):
             ttk.Button(self.actions,text='Duplicate band' if len(path)>2 else 'Add band',command=self.add_band).pack(side='left',padx=6)
             if len(path)>2:ttk.Button(self.actions,text='Remove band',command=self.remove_band).pack(side='left')
@@ -325,6 +327,25 @@ class ConfigEditor(tk.Tk):
             hint={'fraction':'0–1 fraction','integer':'whole number','positive':'greater than 0','number':'0 or greater','text':'text'}.get(rule,'')
             if hint:ttk.Label(row,text=hint,style='Muted.TLabel',width=17).pack(side='right',padx=10)
         build(get_at(self.document.data,path),path)
+
+    def compare_campaign(self):
+        if self.document is None:return
+        try:self.comparison_data()
+        except (ValueError,OSError) as exc:
+            messagebox.showerror('Cannot compare campaign',str(exc),parent=self);return
+        CampaignComparison(self,self.comparison_data,self.apply_comparison_edit)
+
+    def comparison_data(self):
+        data=self.collected()
+        validate_data(data)
+        return data
+
+    def apply_comparison_edit(self,path,value):
+        data=self.collected()
+        set_at(data,path,value)
+        validate_data(data)
+        self.document.data=data;self.variables={};self.selection=path
+        self.mark_dirty();self.rebuild_tree()
 
     def change_structure(self,action):
         try:

@@ -173,6 +173,7 @@ class Building:
 
 @dataclass
 class Radar(Building):
+    category: str = 'Radars'
     def __post_init__(self):
         super().__post_init__()
         if self.range_points is None:self.range_points=self.stats['default_range_points'] if self.early_warning else 0
@@ -253,6 +254,7 @@ class Radar(Building):
 
 @dataclass
 class SAMLauncher(Building):
+    missile_kind: str = 'MIM-23'
     def __post_init__(self):
         super().__post_init__()
         if self.ammo is None:self.ammo=self.stats['ammo']
@@ -328,13 +330,13 @@ class PAC3(SAMLauncher):
 
 @dataclass
 class SAAW(SAMLauncher):
+    category: str = 'Radars'
     def __post_init__(self):
         super().__post_init__()
         for key in ('gun_range_nm','gun_ammo','gun_ammo_capacity'):
             if getattr(self,key) is None:setattr(self,key,self.stats['gun_ammo' if key=='gun_ammo_capacity' else key])
 
     enemy: bool = True
-    category: str = 'Vehicles'
     missile_kind: str = 'SM1'
     enabled: bool = True
     gun_range_nm: float = None
@@ -403,6 +405,7 @@ class CIWS(Building):
 
 @dataclass
 class Flak(CIWS):
+    category: str = 'Radars'
     power: int = None
     range_nm: float = None
     visual_range_nm: float = None
@@ -1210,11 +1213,11 @@ class GameMapPage(ttk.Frame):
             self.cancel_movement();self.refresh_inspector();return
         self.start_movement('attack')
 
-    def finish_attack(self,target):
+    def finish_attack(self,target,point=None):
         a=self.selected
         if not isinstance(a,Aircraft) or a.enemy or target is None or not target.alive:return
-        if not isinstance(target,Factory) and (not isinstance(target,(Aircraft,Radar,SAMLauncher)) or target.enemy==a.enemy):return
-        a.attack_target=target;a.attack_point=(target.x,target.y);a.fenced_in=True
+        if not isinstance(target,Factory) and (not isinstance(target,(Aircraft,Radar,SAMLauncher,CIWS)) or target.enemy==a.enemy):return
+        a.attack_target=target;a.attack_point=point if point is not None else (target.x,target.y);a.fenced_in=True
         a.bomb_run_target=None;a.bomb_run_phase='attack';a.bomb_run_heading=None
         self.cancel_movement();self.refresh_inspector();self.request_draw()
 
@@ -2408,6 +2411,10 @@ class GameMapPage(ttk.Frame):
         for radar in self.radars:radar.advance_bearing(seconds)
         for sam in self.sams:
             if isinstance(sam,PAC3):sam.advance_bearing(seconds)
+        for a in self.aircraft.values():
+            target=a.attack_target
+            if target is not None and id(target) not in self.combat.known_ground and id(target) in self.rwr.estimates:
+                _,x,y,_=self.rwr.estimates[id(target)];a.attack_point=(x,y)
         self.operations.advance(self.aircraft.values(),seconds)
         if self.aircraft_menu_open and self.aircraft_menu_state()!=getattr(self,'aircraft_menu_signature',None):self.refresh_aircraft_menu()
         health_key=tuple(unit.alive for unit in [*self.combat.ground_targets,*self.combat.enemy_radars,*self.combat.enemy_sams])+(len(self.combat.known_ground),)
@@ -2520,6 +2527,14 @@ class GameMapPage(ttk.Frame):
                 slot=self.aircraft_at(event.x,event.y)
                 if slot is not None:self.finish_attack(self.aircraft_for_slot(slot))
                 else:
+                    signal=None
+                    for target,x,y,quality in self.rwr.estimates.values():
+                        if not self.see_all and target.alive and target.radar_emitting and id(target) not in self.combat.known_ground:
+                            px,py=self.pixel(x,y)
+                            if math.hypot(event.x-px,event.y-py)<=14:
+                                signal=(target,(x,y));break
+                    if signal is not None:
+                        self.finish_attack(*signal);self.drag=None;return
                     for target in [*self.combat.factories,*self.combat.enemy_radars,*self.combat.enemy_sams]:
                         if not self.see_all and not (target.id in self.combat.known if isinstance(target,Factory) else id(target) in self.combat.known_ground):continue
                         x,y=self.pixel(target.x,target.y)
@@ -2917,7 +2932,8 @@ class GameMapPage(ttk.Frame):
         elif id(target) in self.rwr.estimates:
             _,x,y,_=self.rwr.estimates[id(target)];point=(x,y)
         if point is None:return False
-        self.canvas.create_line(*self.pixel(missile.x,missile.y),*self.pixel(*point),fill='#ef6262',dash=(6,4),width=1.5,arrow='last',tags='game_combat')
+        color='#69adff' if isinstance(missile,Missile) and missile.kind=='AIM-120' and missile.pitbull else '#ef6262'
+        self.canvas.create_line(*self.pixel(missile.x,missile.y),*self.pixel(*point),fill=color,dash=(6,4),width=1.5,arrow='last',tags='game_combat')
         return True
 
     def aircraft_wreck_visible(self,aircraft):
@@ -3257,6 +3273,15 @@ class GameMapPage(ttk.Frame):
                 item,x,y=self.sam_glyphs[id(sam)]
                 self.canvas.coords(item,*(self.saaw_barrel_points(sam,x,y) if isinstance(sam,SAAW) else self.sam_e_points(sam,x,y)))
 
+    def coverage_in_view(self,spec):
+        # A source whose bounding circle misses the viewport cannot alter a
+        # visible union edge; keep all intersecting sources for correct merging.
+        x,y,r=spec[:3]
+        half_width=self.view_width/2
+        half_height=half_width*max(1,self.canvas.winfo_height())/max(1,self.canvas.winfo_width())
+        return (x+r>=self.center[0]-half_width and x-r<=self.center[0]+half_width
+                and y+r>=self.center[1]-half_height and y-r<=self.center[1]+half_height)
+
     def radar_footprints(self):
         # The airfield and visual detection areas are not radar sources.
         sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.radars if r.radar_emitting]
@@ -3331,9 +3356,11 @@ class GameMapPage(ttk.Frame):
             enemy_sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.combat.enemy_radars if r.radar_emitting]
             enemy_sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.combat.enemy_sams if isinstance(g,(Flak,SAAW)) and g.radar_emitting)
             enemy_sources.extend((a,(a.x,a.y,a.radar_range_nm,a.heading,a.radar_angle_deg)) for a in self.combat.enemies if a.sensors_active and a.radar_range_nm and a.kind!='AWACS')
+        sources=[(source,spec) for source,spec in sources if self.coverage_in_view(spec)]
+        enemy_sources=[(source,spec) for source,spec in enemy_sources if self.coverage_in_view(spec)]
         key=(tuple(spec for source,spec in sources),tuple(spec for source,spec in enemy_sources))
         now=time.monotonic()
-        if key!=self.coverage_key and (force or bool(key[1])!=bool(getattr(self,'radar_enemy_specs',None)) or now-self.coverage_updated>=.2):
+        if key!=self.coverage_key and (force or bool(key[1])!=bool(getattr(self,'radar_enemy_specs',None)) or now-self.coverage_updated>=STATS['world']['coverage_refresh_seconds']):
             self.coverage_paths=union_outline([p for source,spec in sources for p in engagement_footprints(*spec,source.min_engagement_range_nm if isinstance(source,Radar) else 0.)])
             self.enemy_radar_coverage_paths=union_outline([p for source,spec in enemy_sources for p in engagement_footprints(*spec,source.min_engagement_range_nm if isinstance(source,Radar) else 0.)])
             self.coverage_key=key;self.radar_enemy_specs=key[1];self.coverage_updated=now
@@ -3351,9 +3378,11 @@ class GameMapPage(ttk.Frame):
         if self.airfield.alive:friendly+=((self.airfield.x,self.airfield.y,self.airfield.visual_range_nm),)
         enemy=tuple((a.x,a.y,a.visual_range_nm) for a in self.combat.enemies if a.alive and a.sensors_active) if self.see_all else ()
         if self.see_all:enemy+=tuple((g.x,g.y,g.visual_range_nm) for g in self.combat.enemy_sams if isinstance(g,CIWS) and g.alive and g.visual_range_nm>0)
+        friendly=tuple(spec for spec in friendly if self.coverage_in_view(spec))
+        enemy=tuple(spec for spec in enemy if self.coverage_in_view(spec))
         key=(friendly,enemy,self.see_all);now=time.monotonic()
         if key!=self.visual_coverage_key and (not self.playing or self.visual_coverage_key is None
-            or self.see_all!=self.visual_coverage_key[2] or now-self.visual_coverage_updated>=.2):
+            or self.see_all!=self.visual_coverage_key[2] or now-self.visual_coverage_updated>=STATS['world']['coverage_refresh_seconds']):
             self.visual_coverage_paths=[]
             for circles,color in ((friendly,'#6cd9af'),(enemy,'#ef6262')):
                 paths=union_outline([footprint(x,y,r,0.,360.) for x,y,r in circles])
@@ -3392,6 +3421,8 @@ class GameMapPage(ttk.Frame):
         friendly=tuple((u.x,u.y,u.range_nm) for u in self.ciws if u.alive) if active else ()
         enemy=tuple((u.x,u.y,u.gun_range_nm if isinstance(u,SAAW) else u.range_nm) for u in self.combat.enemy_sams if isinstance(u,(CIWS,SAAW)) and u.alive) if active and self.see_all else ()
         if self.placing_ciws and self.pointer:friendly+=((*self.pointer,Flak(0,0,0).range_nm if self.placing_gun_kind=='Flak' else CIWS(0,0,0).range_nm),)
+        friendly=tuple(spec for spec in friendly if self.coverage_in_view(spec))
+        enemy=tuple(spec for spec in enemy if self.coverage_in_view(spec))
         key=(friendly,enemy)
         if key!=self.point_defence_key:
             self.point_defence_key=key
@@ -3413,6 +3444,8 @@ class GameMapPage(ttk.Frame):
         friendly=tuple(spec(s) for s in self.sams if s.alive) if self.sam_overlay else ()
         enemy=tuple(spec(s) for s in self.combat.enemy_sams if isinstance(s,SAMLauncher) and s.alive) if self.sam_overlay and self.see_all else ()
         if self.placing_sam and self.pointer:friendly+=(spec(self.sam_preview(*self.pointer)),)
+        friendly=tuple(spec for spec in friendly if self.coverage_in_view(spec))
+        enemy=tuple(spec for spec in enemy if self.coverage_in_view(spec))
         key=(friendly,enemy)
         if key!=self.sam_coverage_key:
             self.sam_coverage_key=key

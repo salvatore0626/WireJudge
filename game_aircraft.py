@@ -88,6 +88,7 @@ class Aircraft:
     auto_attack_target: object = field(default=None,repr=False,compare=False)
     attack_point: object = None
     combat_turn_intensity: float = 0.
+    command_turn_intensity: float = 0.
     engage_target: object = field(default=None,repr=False,compare=False)
     turn_rate: float = 0.
     refueling_from: object = field(default=None,repr=False,compare=False)
@@ -98,12 +99,13 @@ class Aircraft:
     defensive_missile: object = field(default=None,repr=False,compare=False)
     defensive_side: int = 0
     defensive_speed: object = None
+    defensive_heading: object = None
 
 
     def __post_init__(self):
         if self.kind=='Suicide Drone' and not self.enemy:raise ValueError('Suicide Drone is an enemy-only aircraft')
         if self.target_types is None:
-            self.target_types={'Fighters','Suicide Drones','Bombers','Ground' if self.kind=='Bomber' else 'Buildings','Vehicles'}
+            self.target_types={'Fighters','Suicide Drones','Bombers','Radars','Ground'}
             if self.kind in ('Fighter','Interceptor','Bomber'):self.target_types.add('ICBMs')
         if self.health is None:self.health=self.max_health
         if self.purchase_price is None:self.purchase_price=0 if self.enemy else self.spec['price']
@@ -640,6 +642,10 @@ class AirOperations:
         if combat and a.kind in ('Fighter','Interceptor'):
             rate=min(math.radians(STATS['aircraft_behavior']['combat_turn_limit_degrees_per_second']),9.81*math.tan(math.radians(STATS['aircraft_behavior']['combat_bank_degrees']))/max(35,a.speed*.514444))
             a.combat_turn_intensity=min(1.,max(0.,(abs(error)-math.radians(5))/math.radians(85)))
+        if a.speed>=a.spec['speed_knots']*STATS['speed_modes']['Mil']['speed_multiplier']:rate*=STATS['aircraft_behavior']['fast_turn_multiplier']
+        if not combat and a.state=='airborne' and a.mode in ('direct','patrol','loiter','formation','rtb'):
+            if abs(error)>math.radians(STATS['aircraft_behavior']['command_turn_angle_degrees']):
+                a.command_turn_intensity=max(a.command_turn_intensity,min(1.,abs(error)/math.radians(90)))
         change=max(-rate*dt,min(rate*dt,error))
         a.turn_rate=change/dt
         a.heading=(a.heading+change)%math.tau
@@ -653,10 +659,11 @@ class AirOperations:
             and m.owner.enemy!=a.enemy and not m.terminal and m.decoy is None
             and math.hypot(m.x-a.x,m.y-a.y)<=STATS['aircraft_behavior']['defensive_range_nm']]
         if not threats:
-            a.defensive_missile=None;a.defensive_side=0;a.defensive_speed=None;return False
+            a.defensive_missile=None;a.defensive_side=0;a.defensive_speed=None;a.defensive_heading=None;return False
         if not any(m is a.defensive_missile for m in threats):
             a.defensive_missile=min(threats,key=lambda m:math.hypot(m.x-a.x,m.y-a.y))
             a.defensive_side=self.combat.rng.choice((-1,1))
+            a.defensive_heading=(a.heading+a.defensive_side*math.radians(STATS['aircraft_behavior']['defensive_turn_angle_degrees']))%math.tau
             a.defensive_speed=(a.max_ab_speed*self.combat.rng.uniform(
                 STATS['aircraft_behavior']['defensive_speed_min_fraction'],
                 STATS['aircraft_behavior']['defensive_speed_max_fraction'])
@@ -670,7 +677,7 @@ class AirOperations:
                 a.service_remaining=max(0.,a.service_remaining-dt)
                 if a.service_remaining<=1e-9:a.refill();a.state='parked'
             return
-        a.turn_rate=0.;a.combat_turn_intensity=0.
+        a.turn_rate=0.;a.combat_turn_intensity=0.;a.command_turn_intensity=0.
         defensive=self.defensive_guidance(a)
         target_speed=a.cruise_speed;acceleration=STATS['aircraft_behavior']['acceleration_knots_per_second'];deceleration=STATS['aircraft_behavior']['deceleration_knots_per_second']
         receivers=[f for f in a.followers if f.alive and f.fuel_rendezvous]
@@ -687,7 +694,7 @@ class AirOperations:
                 a.speed=0.;a.x,a.y=parking_position(a.parking_slot)
                 a.begin_service(self.ground_crew_level);return
         elif defensive:
-            desired=a.heading+a.defensive_side*math.radians(STATS['aircraft_behavior']['defensive_turn_angle_degrees'])
+            desired=a.defensive_heading
             self.steer(a,math.sin(desired),math.cos(desired),dt,combat=True)
         elif a.state in ('rtb','approach'):
             a.fenced_in=False
@@ -742,6 +749,8 @@ class AirOperations:
                         turn_speed=math.sqrt(9.81*1852*turn_radius)/.514444
                         target_speed=min(target_speed,max(STATS['aircraft_behavior']['bomb_turn_speed_knots'],turn_speed));deceleration=STATS['aircraft_behavior']['bomb_turn_deceleration_knots_per_second']
                 self.toward(a,point,dt,combat=True)
+            elif a.attack_target is not None and a.attack_target.alive and a.attack_point is not None and a.fenced_in:
+                self.toward(a,a.attack_point,dt,combat=True)
             elif a.mode=='formation' and a.leader is not None:
                 formation_speed=self.formation_guidance(a,dt)
                 if formation_speed is not None:target_speed=formation_speed
@@ -779,6 +788,10 @@ class AirOperations:
         if a.combat_turn_intensity>0:
             target_speed=min(target_speed,max(a.cruise_speed*.5,a.cruise_speed*(1-.5*a.combat_turn_intensity)))
             deceleration=max(deceleration,20.)
+        if getattr(a,'command_turn_intensity',0.)>0:
+            fraction=1-(1-STATS['aircraft_behavior']['command_turn_speed_fraction'])*a.command_turn_intensity
+            target_speed=min(target_speed,a.cruise_speed*fraction)
+            deceleration=max(deceleration,STATS['aircraft_behavior']['command_turn_deceleration_knots_per_second'])
         if defensive and a.defensive_speed is not None:target_speed=a.defensive_speed
         delta=target_speed-a.speed
         a.speed=max(0,a.speed+max(-deceleration*dt,min(acceleration*dt,delta)))
