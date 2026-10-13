@@ -39,7 +39,7 @@ def projectile_impact_seconds(weapon,elapsed):
     if isinstance(weapon,Bomb):
         remaining=weapon.launched+weapon.duration-elapsed
         return max(0.,remaining) if math.isfinite(remaining) else None
-    target=weapon.decoy if weapon.decoy is not None else weapon.target
+    target=weapon.guidance_target
     if weapon.terminal or not target.alive:return None
     dx,dy=target.x-weapon.x,target.y-weapon.y
     radius=math.hypot(dx,dy)

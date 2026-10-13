@@ -758,6 +758,7 @@ class WireJudge(tk.Tk):
             self.settings=settings
             if not settings.sound_effects or settings.sound_volume==0:
                 self.sounds.stop()
+                if getattr(self.game_map,'game_audio',None) is not None:self.game_map.game_audio.stop()
             self.play_sound('save')
             self.points_value.set(settings.show_data_points);self.selected=None;self.redraw();self.status.set('Settings saved and applied.');readouts();self.score_window.refresh()
             update_button_styles()

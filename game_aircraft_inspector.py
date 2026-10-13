@@ -10,7 +10,7 @@ MUTED='#93a3b8'
 GREEN='#72d693'
 YELLOW='#ffe66d'
 RED='#ef6262'
-WEAPON_COLORS={'AIM-120':'#ffe66d','AIM-9':'#ff9a48','HARM':'#ef6262','Sidearm':'#d58cff',250:'#69adff',500:'#69adff',1000:'#69adff',2000:'#69adff'}
+WEAPON_COLORS={'AIM-120':'#ffe66d','AIM-9':'#ff9a48','AGM-88':'#ef6262','Sidearm':'#d58cff',250:'#69adff',500:'#69adff',1000:'#69adff',2000:'#69adff'}
 
 
 def health_color(fraction):
@@ -35,7 +35,7 @@ def weapon_rows(a):
     bombs={}
     for weight,count in a.bomb_inventory:bombs[weight]=bombs.get(weight,0)+count
     rows=[]
-    for kind in ('AIM-120','AIM-9','HARM','Sidearm'):
+    for kind in ('AIM-120','AIM-9','AGM-88','Sidearm'):
         count=a.missile_inventory.get(kind,0)
         if count or configured_missiles.get(kind,0):rows.append((kind,kind,count))
     for weight in sorted(set(configured_bombs)|set(bombs)):
@@ -99,10 +99,10 @@ class AircraftInspector(tk.Canvas):
 
     def weapon_icon(self,kind,x,y,color):
         if isinstance(kind,str):
-            length,width={'AIM-120':(35,4),'AIM-9':(28,4),'HARM':(43,5),'Sidearm':(30,5)}[kind]
+            length,width={'AIM-120':(35,4),'AIM-9':(28,4),'AGM-88':(43,5),'Sidearm':(30,5)}[kind]
             self.create_polygon(x-length/2,y-width,x+length/2-6,y-width,x+length/2,y,x+length/2-6,y+width,x-length/2,y+width,fill=color,outline='')
             self.create_polygon(x-length/2+3,y,x-length/2-1,y-9,x-length/2+9,y-4,x-length/2+9,y+4,x-length/2-1,y+9,fill=color,outline='')
-            if kind in ('HARM','Sidearm'):self.create_line(x+4,y-8,x+4,y+8,fill=color,width=3)
+            if kind in ('AGM-88','Sidearm'):self.create_line(x+4,y-8,x+4,y+8,fill=color,width=3)
             elif kind=='AIM-120':self.create_line(x+7,y-7,x+7,y+7,fill=color,width=2)
         else:
             length,width={250:(24,3),500:(32,6),1000:(43,7),2000:(48,9)}[kind]

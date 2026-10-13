@@ -3,6 +3,7 @@ from collections import deque
 from dataclasses import dataclass, field
 import math
 import random
+import time
 
 from game_settings import STATS, aircraft_specs, crew_repair_seconds, crew_weapon_seconds, crew_count, loadout_label
 
@@ -15,9 +16,9 @@ def ground_refuel_rate(level):
     return s['refuel_units_per_second_level1']*(1+s['refuel_increase_fraction_per_level'])**(level-1)
 
 
-def hardpoint_weapon(value):
-    for kind in ('AIM-120','AIM-9','HARM','Sidearm'):
-        if kind in value:return kind,STATS['missiles'][kind]['hardpoint_count']
+def hardpoint_weapon(value,hardpoint_counts=None):
+    for kind in ('AIM-120','AIM-9','AGM-88','Sidearm'):
+        if kind in value:return kind,(hardpoint_counts or {}).get(kind,STATS['missiles'][kind]['hardpoint_count'])
     return None,0
 
 
@@ -105,8 +106,8 @@ class Aircraft:
             self.target_types={'Fighters','Suicide Drones','Bombers','Ground' if self.kind=='Bomber' else 'Buildings','Vehicles'}
             if self.kind in ('Fighter','Interceptor','Bomber'):self.target_types.add('ICBMs')
         if self.health is None:self.health=self.max_health
-        if self.purchase_price is None:self.purchase_price=self.spec['price']
-        self.hardpoints=([loadout_label(v) for v in self.hardpoints]+['Empty']*self.spec['hardpoints'])[:self.spec['hardpoints']]
+        if self.purchase_price is None:self.purchase_price=0 if self.enemy else self.spec['price']
+        self.hardpoints=([loadout_label(v,self.spec.get('hardpoint_loadout_counts')) for v in self.hardpoints]+['Empty']*self.spec['hardpoints'])[:self.spec['hardpoints']]
         self.bays=([loadout_label(v) for v in self.bays]+['Empty']*self.spec['bays'])[:self.spec['bays']]
         self.bays=[value if bomb_bay_allowed(self.kind,value) else 'Empty' for value in self.bays]
         if self.kind=='Bomber':self.hardpoints=['2× AIM-9' if 'AIM-120' in value else value for value in self.hardpoints]
@@ -129,6 +130,7 @@ class Aircraft:
     def air_missiles_available(self):return sum(self.missile_inventory.get(kind,0) for kind in ('AIM-120','AIM-9'))
 
     def destroy(self):
+        if getattr(self,'death_wall_time',None) is None:self.death_wall_time=time.monotonic()
         self.health=0.;self.state='destroyed';self.speed=0.
         self.detach();self.engage_target=None;self.combat_heading=None;self.combat_home=False
         for follower in list(self.followers):follower.loiter((self.x,self.y))
@@ -263,9 +265,9 @@ class Aircraft:
         self.bomb_inventory=[[weight,count] for weight,count in bombs.items()]
 
     def configured_weapons(self):
-        missiles={'AIM-120':0,'AIM-9':0,'HARM':0,'Sidearm':0};bombs={}
+        missiles={'AIM-120':0,'AIM-9':0,'AGM-88':0,'Sidearm':0};bombs={}
         for value in self.hardpoints:
-            kind,count=hardpoint_weapon(value)
+            kind,count=hardpoint_weapon(value,self.spec.get('hardpoint_loadout_counts'))
             if kind is not None:missiles[kind]+=count
         for value in self.bays:
             if not bomb_bay_allowed(self.kind,value):continue
@@ -319,7 +321,7 @@ class Aircraft:
         if self.kind=='Bomber' and group=='hardpoints' and 'AIM-120' in value:return False
         old=stations[index]
         if group=='hardpoints':
-            kind,count=hardpoint_weapon(old)
+            kind,count=hardpoint_weapon(old,self.spec.get('hardpoint_loadout_counts'))
             if kind is not None:self.missile_inventory[kind]=max(0,self.missile_inventory.get(kind,0)-count)
         else:
             for weight,count in ((int(w),s['bay_count']) for w,s in STATS['bombs'].items()):
@@ -482,26 +484,40 @@ class AirOperations:
         # Small integration steps keep turns and runway transitions stable at every playback speed.
         remaining=max(0,float(seconds))
         while remaining>1e-9:
+            campaign=self.combat.campaign if self.combat is not None else None
+            if campaign is not None and (campaign.finished or campaign.awaiting_victory or not campaign.airfield.alive):break
             dt=min(.1,remaining);remaining-=dt;self.time+=dt
-            if self.combat is not None:self.combat.prepare(aircraft,self.time)
-            runway_busy=any(a.state in ('takeoff','approach','rollout') for a in aircraft)
+            if self.combat is not None:
+                self.combat.prepare(aircraft,self.time)
+                if campaign is not None and campaign.awaiting_victory:break
+            runway_busy=any(not a.enemy and a.state in ('takeoff','approach','rollout') for a in aircraft)
+            enemy_busy={id(a.home_runway) for a in aircraft if getattr(a,'home_runway',None) is not None and a.alive and a.state=='takeoff'}
             for a in aircraft:
                 a.refueling_from=None
-                if a.state=='queued' and not runway_busy:
-                    a.x=0.;a.y=-.65;a.heading=0.;a.speed=0.
+                home=getattr(a,'home_runway',None)
+                available=not runway_busy if home is None else home.alive and id(home) not in enemy_busy
+                if a.state=='queued' and available:
+                    a.x=home.x if home is not None else 0.;a.y=(home.y if home is not None else 0.)-.65;a.heading=0.;a.speed=0.
                     if a.needs_service:
                         a.begin_service(self.ground_crew_level)
                     else:
-                        a.state='takeoff';a.takeoff_airborne=False;a.departure_distance=0.;runway_busy=True
+                        a.state='takeoff';a.takeoff_airborne=False;a.departure_distance=0.
+                        if home is None:runway_busy=True
+                        else:enemy_busy.add(id(home))
                 self.step(a,dt,not runway_busy or a.state=='approach')
-                if a.state in ('takeoff','approach','rollout'):runway_busy=True
+                if home is None and a.state in ('takeoff','approach','rollout'):runway_busy=True
                 if self.time-a.last_sample>=.2-1e-9:
                     if a.speed>=1:a.history.append((self.time,a.x,a.y,a.speed))
                     a.last_sample=self.time
                 while a.history and a.history[0][0]<self.time-30.2:a.history.popleft()
             self.service_aircraft(aircraft,dt)
             self.refuel_aircraft(aircraft,dt)
-            if self.combat is not None:self.combat.advance(self.time)
+            if self.combat is not None:
+                self.combat.advance(self.time)
+                campaign=self.combat.campaign
+                if campaign is not None:
+                    campaign.observe([*self.combat.ground_targets,*[a for a in aircraft if not a.enemy]])
+                    if not campaign.airfield.alive or campaign.awaiting_victory:break
 
     def service_aircraft(self,aircraft,dt):
         waiting=[a for a in aircraft if a.alive and not a.enemy and a.state=='servicing']
@@ -710,7 +726,9 @@ class AirOperations:
                     point=intercept_point((a.x,a.y),point,
                                           (target.speed*math.sin(target.heading),target.speed*math.cos(target.heading)),
                                           a.speed)
-                    if a.missile_inventory.get('AIM-120',0) and math.hypot(target.x-a.x,target.y-a.y)<=STATS['missiles']['AIM-120']['launch_range_nm']:
+                    if any(a.weapon_enabled(kind) and a.missile_inventory.get(kind,0)>0
+                           and math.hypot(target.x-a.x,target.y-a.y)<=STATS['missiles'][kind]['launch_range_nm']
+                           for kind in ('AIM-9','AIM-120')):
                         bearing=math.atan2(target.x-a.x,target.y-a.y)
                         lead_heading=math.atan2(point[0]-a.x,point[1]-a.y)
                         limit=math.radians(max(0,a.radar_angle_deg/2-5))

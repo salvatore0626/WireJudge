@@ -12,7 +12,10 @@ from game_aircraft_inspector import AircraftInspector
 from game_ground_inspector import GroundInspector, HealthInspector, AmmoInspector
 from game_icbm_inspector import ICBMInspector, ICBMSiloInspector, ProjectileInspector, HelicopterInspector
 from game_world import RWR, RWR_RANGE_NM
+from game_campaign import Campaign, EnemyRunway
+from game_results import ResultBoard, results_header
 from game_logistics import LogisticsFleet, LogisticsHelicopter, LOGISTICS_LEVELS, LOGISTICS_UPGRADE_COSTS, helipad_position
+from game_audio import GameAudio
 from game_combat import CombatWorld, Factory, Bunker, DroneLauncher, ICBMSilo, ICBM, Missile, Bomb, TARGET_TYPES, ENGAGEMENT_RANGES
 from game_aircraft import rtb_alert_fuel, bomb_bay_allowed, Aircraft, AIRCRAFT_TYPES, AIRCRAFT_PRICE, AirOperations, parking_position, formation_position, REFUEL_RADIUS_NM, ground_refuel_rate
 from replay_style import AIRCRAFT_SIZE, AIRCRAFT_TRAIL_WIDTH, aircraft_marker
@@ -48,7 +51,7 @@ AIRCRAFT_COLORS = (
     ('Red','#ef6262'),('Coral','#ff9689'),('Violet','#aa8aff'),
     ('Rose','#ee8aca'),('Pink','#ffc1dc'),('White','#dfe9f5'),
 )
-HARDPOINT_LOADOUTS = tuple(loadout_label(v) for v in ('Empty','2× AIM-9','1× AIM-120C','2× HARM','2× Sidearm'))
+HARDPOINT_LOADOUTS = tuple(loadout_label(v) for v in ('Empty','2× AIM-9','1× AIM-120C','2× AGM-88','2× Sidearm'))
 BAY_LOADOUTS = tuple(loadout_label(v) for v in ('Empty','4× 250 lb Bomb','2× 500 lb Bomb','1× 1,000 lb Bomb','1× 2,000 lb Bomb'))
 DEFAULT_LOADOUTS={k:([loadout_label(v) for v in s['hardpoints']],[loadout_label(v) for v in s['bays']]) for k,s in STATS['default_loadouts'].items()}
 AIRCRAFT_DESCRIPTIONS={
@@ -98,7 +101,7 @@ class Airfield:
     def stats(self):return ground_stats('Airfield',self.enemy)
 
     @property
-    def min_engagement_range_nm(self):return self.stats['min_engagement_range_nm']
+    def min_engagement_range_nm(self):return self.stats.get('min_engagement_range_nm',0)
 
     @property
     def max_health(self):return self.stats['health']
@@ -158,10 +161,10 @@ class Building:
     def stats(self):return ground_stats(self.stats_key,getattr(self,'enemy',False))
 
     @property
-    def min_engagement_range_nm(self):return self.stats['min_engagement_range_nm']
+    def min_engagement_range_nm(self):return self.stats.get('min_engagement_range_nm',0)
 
     @property
-    def price(self):return self.stats['price']
+    def price(self):return 0 if getattr(self,'enemy',False) else self.stats['price']
 
     def corners(self):
         return [(self.x+dx*self.width/2,self.y+dy*self.length/2)
@@ -172,7 +175,7 @@ class Building:
 class Radar(Building):
     def __post_init__(self):
         super().__post_init__()
-        if self.range_points is None:self.range_points=ground_stats('EWR',self.enemy)['default_range_points']
+        if self.range_points is None:self.range_points=self.stats['default_range_points'] if self.early_warning else 0
 
     long_range: bool = False
     enemy: bool = False
@@ -241,7 +244,7 @@ class Radar(Building):
 
     @property
     def power(self):
-        return self.stats['power']
+        return 0 if self.enemy else self.stats['power']
 
     @property
     def name(self):
@@ -275,7 +278,7 @@ class SAMLauncher(Building):
 
     @property
     def power(self):
-        return self.stats['power']
+        return 0 if self.enemy else self.stats['power']
 
     @property
     def name(self):
@@ -289,6 +292,10 @@ class SAMLauncher(Building):
 
 @dataclass
 class PAC3(SAMLauncher):
+    def __post_init__(self):
+        if self.enemy:raise ValueError('PAC-3 is a player-only unit')
+        super().__post_init__()
+
     missile_kind: str = 'PAC-3 MSE'
     enabled: bool = True
     preferred_targets: set = field(default_factory=lambda: {'Bombers','Fighters','ICBMs'})
@@ -338,6 +345,12 @@ class SAAW(SAMLauncher):
     preferred_targets: set = field(default_factory=lambda: {'Fighters','Bombers','Suicide Drones','Missiles','Bombs','ICBMs'})
 
     @property
+    def radar_range_nm(self):return self.stats['radar_range_nm']
+
+    def radar_detects(self,x,y):
+        return self.radar_emitting and math.hypot(x-self.x,y-self.y)<=self.radar_range_nm
+
+    @property
     def radar_emitting(self):return self.alive and self.enabled
 
     @property
@@ -347,7 +360,7 @@ class SAAW(SAMLauncher):
     def max_health(self):return self.stats['health']
 
     @property
-    def power(self):return self.stats['power']
+    def power(self):return 0 if self.enemy else self.stats['power']
 
     @property
     def name(self):return 'Enemy SAAW' if self.enemy else 'SAAW'
@@ -366,7 +379,9 @@ class CIWS(Building):
     def __post_init__(self):
         super().__post_init__()
         for key in ('range_nm','visual_range_nm','power','ammo','ammo_capacity'):
-            if getattr(self,key) is None:setattr(self,key,self.stats['ammo' if key=='ammo_capacity' else key])
+            if getattr(self,key) is not None:continue
+            value=0 if key=='power' and self.enemy else self.stats.get('visual_range_nm',0) if key=='visual_range_nm' else self.stats['ammo' if key=='ammo_capacity' else key]
+            setattr(self,key,value)
 
     enemy: bool = False
     preferred_targets: set = field(default_factory=lambda: {'Fighters','Bombers','Suicide Drones','Missiles','Bombs','ICBMs'})
@@ -399,6 +414,12 @@ class Flak(CIWS):
     preferred_targets: set = field(default_factory=lambda: {'Fighters','Bombers','Suicide Drones','ICBMs'})
 
     @property
+    def radar_range_nm(self):return self.stats['radar_range_nm']
+
+    def radar_detects(self,x,y):
+        return self.radar_emitting and math.hypot(x-self.x,y-self.y)<=self.radar_range_nm
+
+    @property
     def radar_emitting(self):return self.alive and self.enabled
 
     @property
@@ -413,7 +434,9 @@ class GameMapPage(ttk.Frame):
         self.logistics=LogisticsFleet();self.logistics.sync(LOGISTICS_LEVELS[self.airfield.logistics_level-1],self.airfield)
         self.center = [self.airfield.x,self.airfield.y]
         self.view_width = 10.
-        self.playing = True
+        self.playing = False
+        self.run_started=False;self.run_result=None
+        self.show_bands=STATS['campaign']['show_bands']
         self.play_speed = 1
         self.elapsed = 0.
         self.active = False
@@ -425,11 +448,17 @@ class GameMapPage(ttk.Frame):
         self.money = STATS['economy']['starting_money']
         self.aircraft = {}
         self.operations=AirOperations()
+        self.game_audio=GameAudio(lambda:(self.app.settings.sound_effects,self.app.settings.sound_volume))
+        self.game_audio.set_muted(getattr(self.app,'game_audio_muted',False))
         self.combat=CombatWorld();self.operations.combat=self.combat
+        self.combat.sound_callback=self.play_game_sound
         self.combat.ground_targets=[self.airfield]
+        self.campaign=Campaign(self.combat,self.airfield,self.spawn_campaign_ground)
+        self.combat.campaign=self.campaign
         self.rwr=RWR();self.log_entries=[]
         self.factory_spawn_kind="Factory"
         self.placing_factory=False
+        self.debug_kill_mode=False
         self.placing_enemy=False
         self.enemy_spawn_kind='Fighter'
         self.left_menu="Build"
@@ -559,26 +588,34 @@ class GameMapPage(ttk.Frame):
         self.airfield_unlock_text=tk.StringVar()
         self.unlock_hosts=[ttk.Frame(self.airfield_panel)]
         self.unlock_hosts[0].pack(fill='x',pady=(0,8))
-        self.debug_panel=ttk.Frame(self.menu_host,padding=10)
+        self.debug_scroll_panel,self.debug_panel,self.debug_scroll_canvas=self.create_scroll_menu()
         ttk.Label(self.debug_panel,text='DEBUG',font=('Helvetica',11,'bold')).pack(anchor='w',pady=(0,10))
-        self.factory_button=ttk.Button(self.debug_panel,text='Spawn Factory · 75 HP',command=self.toggle_factory)
+        self.factory_button=ttk.Button(self.debug_panel,text=f'Spawn Enemy Factory · {STATS["enemy_ground_units"]["Factory"]["health"]:g} HP',command=self.toggle_factory)
         self.factory_button.pack(fill='x')
-        self.bunker_button=ttk.Button(self.debug_panel,text='Spawn Bunker · 400 HP',command=lambda:self.toggle_factory('Bunker'))
+        self.bunker_button=ttk.Button(self.debug_panel,text=f'Spawn Enemy Bunker · {STATS["enemy_ground_units"]["Bunker"]["health"]:g} HP',command=lambda:self.toggle_factory('Bunker'))
         self.bunker_button.pack(fill='x',pady=(6,0))
         self.enemy_button=ttk.Button(self.debug_panel,text='Spawn Enemy Fighter',command=self.toggle_enemy)
         self.enemy_button.pack(fill='x',pady=(6,0))
+        self.enemy_interceptor_button=ttk.Button(self.debug_panel,text='Spawn Enemy Interceptor',command=lambda:self.toggle_enemy('Interceptor'))
+        self.enemy_interceptor_button.pack(fill='x',pady=(6,0))
         self.drone_button=ttk.Button(self.debug_panel,text='Spawn Enemy Suicide Drone',command=lambda:self.toggle_enemy('Suicide Drone'))
         self.drone_button.pack(fill='x',pady=(6,0))
         self.enemy_bomber_button=ttk.Button(self.debug_panel,text='Spawn Enemy Bomber',command=lambda:self.toggle_enemy('Bomber'))
         self.enemy_bomber_button.pack(fill='x',pady=(6,0))
         self.enemy_radar_button=ttk.Button(self.debug_panel,text='Spawn Enemy Radar',command=lambda:self.toggle_enemy('Radar'))
         self.enemy_radar_button.pack(fill='x',pady=(6,0))
+        self.enemy_lr_radar_button=ttk.Button(self.debug_panel,text='Spawn Enemy LR Radar',command=lambda:self.toggle_enemy('LR Radar'))
+        self.enemy_lr_radar_button.pack(fill='x',pady=(6,0))
+        self.enemy_ciws_button=ttk.Button(self.debug_panel,text='Spawn Enemy CIWS',command=lambda:self.toggle_enemy('CIWS'))
+        self.enemy_ciws_button.pack(fill='x',pady=(6,0))
         self.enemy_flak_button=ttk.Button(self.debug_panel,text='Spawn Enemy Flak',command=lambda:self.toggle_enemy('Flak'))
         self.enemy_flak_button.pack(fill='x',pady=(6,0))
         self.enemy_saaw_button=ttk.Button(self.debug_panel,text='Spawn Enemy SAAW',command=lambda:self.toggle_enemy('SAAW'))
         self.enemy_saaw_button.pack(fill='x',pady=(6,0))
         self.enemy_sam_button=ttk.Button(self.debug_panel,text='Spawn Enemy SAM',command=lambda:self.toggle_enemy('SAM'))
         self.enemy_sam_button.pack(fill='x',pady=(6,0))
+        self.enemy_lr_sam_button=ttk.Button(self.debug_panel,text='Spawn Enemy LR SAM',command=lambda:self.toggle_enemy('LR SAM'))
+        self.enemy_lr_sam_button.pack(fill='x',pady=(6,0))
         self.enemy_drone_launcher_button=ttk.Button(self.debug_panel,text='Spawn Enemy Drone Launcher',command=lambda:self.toggle_enemy('Drone Launcher'))
         self.enemy_drone_launcher_button.pack(fill='x',pady=(6,0))
         self.enemy_silo_button=ttk.Button(self.debug_panel,text='Spawn Enemy ICBM Silo',command=lambda:self.toggle_enemy('ICBM Silo'))
@@ -588,11 +625,16 @@ class GameMapPage(ttk.Frame):
         self.see_all_button=ttk.Button(self.debug_panel,text='See All',command=self.toggle_see_all)
         self.see_all_button.pack(fill='x',pady=(10,0))
         ttk.Button(self.debug_panel,text='Cancel',command=self.cancel_placement).pack(fill='x',pady=(5,0))
+        self.debug_kill_button=ttk.Button(self.debug_panel,text='Kill Tool',command=self.toggle_debug_kill)
+        self.debug_kill_button.pack(fill='x',pady=(8,0))
+        self.bands_button=ttk.Button(self.debug_panel,text='Show Bands',style='GamePlay.TButton' if self.show_bands else 'TButton',command=self.toggle_bands)
+        self.bands_button.pack(fill='x',pady=(6,0))
         self.log_panel=ttk.Frame(self.menu_host,padding=10)
         ttk.Label(self.log_panel,text='LOG',font=('Helvetica',11,'bold')).pack(anchor='w',pady=(0,8))
         log_scroll=ttk.Scrollbar(self.log_panel);log_scroll.pack(side='right',fill='y')
         self.log_text=tk.Text(self.log_panel,background=BG,foreground=TEXT,wrap='word',width=30,height=12,relief='flat',state='disabled',yscrollcommand=log_scroll.set)
         self.log_text.pack(fill='both',expand=True);log_scroll.configure(command=self.log_text.yview)
+        self.log_text.tag_configure('damage',foreground='#ef6262')
         self.log_text.tag_configure('cost',foreground='#ef6262')
         self.log_text.tag_configure('purchase',foreground='#ffffff')
         self.log_text.tag_configure('upgrade',foreground='#67b7ff')
@@ -730,6 +772,7 @@ class GameMapPage(ttk.Frame):
         self.create_aircraft_menu()
         self.bind_menu_wheel(self.build_panel,self.build_scroll_canvas)
         self.bind_menu_wheel(self.airfield_panel,self.airfield_scroll_canvas)
+        self.bind_menu_wheel(self.debug_panel,self.debug_scroll_canvas)
         def inspector_widgets(widget):
             yield widget
             for child in widget.winfo_children():yield from inspector_widgets(child)
@@ -764,8 +807,8 @@ class GameMapPage(ttk.Frame):
         for x in range(6,19):
             half=max(1,round((19-x)*.6))
             self.play_icon.put('#ffffff',to=(x,10-half,x+1,10+half))
-        self.play_button=ttk.Button(controls,text='    ',image=self.play_icon,compound='center',
-                                   width=4,style='GamePlay.TButton',command=self.toggle_play)
+        self.play_button=ttk.Button(controls,text='    ',image=self.pause_icon,compound='center',
+                                   width=4,style='GamePause.TButton',command=self.toggle_play)
         self.play_button.pack(side='left',padx=(0,8))
         self.speed_buttons={}
         for speed in (1,2,4,10):
@@ -811,8 +854,14 @@ class GameMapPage(ttk.Frame):
         self.hud_logistics.pack(side='left')
         self.contacts_text=tk.StringVar(value='Contacts: 0')
         ttk.Label(right,textvariable=self.contacts_text,foreground='#ef6262').pack(anchor='w',pady=(0,4))
+        self.band_text=tk.StringVar(value=f'Campaign · {len(STATS["campaign"]["tiers"])} bands')
+        ttk.Label(right,textvariable=self.band_text,foreground=MUTED).pack(anchor='w',pady=(0,4))
         self.canvas=tk.Canvas(right,background=BG,highlightthickness=1,highlightbackground='#344258')
         self.canvas.pack(fill='both',expand=True)
+        style.configure('GameMute.TButton',padding=(6,3),font=('Helvetica',9))
+        style.configure('GameMuted.TButton',padding=(6,3),font=('Helvetica',9),foreground='#ef6262')
+        self.mute_button=ttk.Button(self.canvas,text='Unmute' if self.game_audio.muted else 'Mute',width=7,style='GameMuted.TButton' if self.game_audio.muted else 'GameMute.TButton',command=self.toggle_game_mute)
+        self.mute_button.place(relx=1.,rely=1.,x=-10,y=-10,anchor='se')
         self.canvas.bind('<Configure>',self.resized)
         self.canvas.bind('<Button-1>',self.press)
         self.canvas.bind('<B1-Motion>',self.motion)
@@ -833,7 +882,151 @@ class GameMapPage(ttk.Frame):
         self.bind('<Destroy>',self.destroyed,add='+')
         self.refresh_inspector()
         self.show_left_menu("Build",cancel=False)
+        self.create_run_screen()
+        self.show_run_screen('start')
         self.request_draw()
+
+    def spawn_campaign_ground(self,kind,x,y):
+        if kind=='PAC-3':raise ValueError('PAC-3 is a player-only unit')
+        if kind in ('Factory','Bunker','Drone Launcher','ICBM Silo'):
+            return {'Factory':self.combat.spawn_factory,'Bunker':self.combat.spawn_bunker,'Drone Launcher':self.combat.spawn_drone_launcher,'ICBM Silo':self.combat.spawn_silo}[kind](x,y)
+        if kind in ('Radar','LR Radar'):
+            unit=Radar(len(self.combat.enemy_radars)+1,x,y,enemy=True,long_range=kind=='LR Radar')
+            self.combat.enemy_radars.append(unit)
+        else:
+            cls={'SAM':SAMLauncher,'LR SAM':SAMLauncher,'SAAW':SAAW,'Flak':Flak,'CIWS':CIWS,'PAC-3':PAC3}[kind]
+            kwargs={'enemy':True}
+            if kind in ('SAM','LR SAM'):kwargs['long_range']=kind=='LR SAM'
+            unit=cls(len(self.combat.enemy_sams)+1,x,y,**kwargs)
+            if isinstance(unit,PAC3):unit.bearing=math.atan2(self.airfield.x-x,self.airfield.y-y);unit.desired_bearing=unit.bearing
+            self.combat.enemy_sams.append(unit)
+        return unit
+
+    def create_run_screen(self):
+        self.result_board=None
+        self.run_screen=ttk.Frame(self,padding=20)
+        self.run_screen.bind('<Configure>',self.resize_results)
+        self.run_card=ttk.Frame(self.run_screen,padding=30)
+        self.run_card.place(relx=.5,rely=.5,anchor='center')
+        self.run_title=ttk.Label(self.run_card,font=('Helvetica',22,'bold'))
+        self.run_title.pack(pady=(0,15))
+        self.run_summary=ttk.Label(self.run_card,justify='left',font=('Helvetica',12),wraplength=520)
+        self.run_summary.pack(pady=(0,20))
+        self.run_actions=ttk.Frame(self.run_card);self.run_actions.pack(fill='x')
+
+    def show_run_screen(self,kind):
+        for child in self.run_actions.winfo_children():child.destroy()
+        self.run_summary.configure(font=('Helvetica',12 if kind=='start' else 10))
+        if self.result_board is not None:self.result_board.stop();self.result_board.destroy();self.result_board=None
+        if kind=='start':
+            self.run_title.configure(text='AIRFIELD DEFENSE')
+            self.run_summary.configure(text=f'Defend your base. Destroy every enemy runway to open the next band.\n\n{len(STATS["campaign"]["tiers"])} bands · {STATS["campaign"]["safe_radius_nm"]:g} NM safe core · {STATS["campaign"]["band_width_nm"]:g} NM bands')
+            ttk.Button(self.run_actions,text='Start Game',style='GamePlay.TButton',command=self.start_run).pack(fill='x')
+        else:
+            self.run_title.configure(text='VICTORY · CAMPAIGN COMPLETE' if kind=='win' else 'BASE DESTROYED',foreground='#72d693' if kind=='win' else '#ef6262')
+            self.run_summary.configure(text=results_header(self.campaign,self.elapsed),wraplength=780)
+            self.result_board=ResultBoard(self.run_card,self.campaign,self)
+            self.result_board.pack(fill='both',expand=True,before=self.run_actions,pady=(0,12))
+            self.resize_results()
+            if kind=='win':ttk.Button(self.run_actions,text='Continue · Infinite Mode',style='GamePlay.TButton',command=self.continue_run).pack(fill='x',pady=(0,8))
+            ttk.Button(self.run_actions,text='Restart',command=self.restart_run).pack(fill='x')
+        self.run_screen.place(x=0,y=0,relwidth=1,relheight=1);self.run_screen.lift()
+
+    def resize_results(self,event=None):
+        if self.result_board is None:return
+        width=max(250,min(820,self.winfo_width()-100))
+        height=max(120,min(430,self.winfo_height()-300))
+        self.result_board.canvas.configure(width=width,height=height)
+        self.run_summary.configure(wraplength=width)
+        self.run_title.configure(wraplength=width)
+
+    def start_run(self):
+        self.run_started=True;self.run_screen.place_forget()
+        self.campaign.start(self.elapsed);self.set_speed(1)
+        if not self.playing:self.toggle_play()
+        self.refresh_campaign();self.request_draw()
+
+    def finish_run(self,result):
+        if self.run_result is not None:return
+        self.run_result=result
+        if getattr(self,'game_audio',None) is not None:self.game_audio.stop()
+        if result=='loss':self.campaign.finished=True
+        self.playing=False
+        if self.job is not None:self.after_cancel(self.job);self.job=None
+        self.play_button.configure(image=self.pause_icon,style='GamePause.TButton')
+        self.show_run_screen(result)
+
+    def continue_run(self):
+        self.run_result=None;self.run_screen.place_forget()
+        if self.result_board is not None:self.result_board.stop()
+        self.campaign.continue_run(self.elapsed);self.last_tick=time.monotonic()
+        if not self.playing:self.toggle_play()
+        self.refresh_campaign();self.request_draw()
+
+    def restart_run(self):
+        parent=self.master;index=parent.index(self)
+        replacement=GameMapPage(self.app,parent)
+        self.app.game_map=replacement
+        parent.insert(index,replacement,text='Game');parent.forget(self)
+        self.destroy();parent.select(replacement);replacement.set_active(True)
+
+    def refresh_campaign(self):
+        if not self.run_started:return
+        self.campaign.observe([self.airfield,*self.aircraft.values(),*self.radars,*self.sams,*self.ciws])
+        band=self.campaign.bands[-1]
+        remaining=sum(r.alive for r in band.runways)
+        self.band_text.set(f'Band {band.number} · Runways remaining: {remaining}/{len(band.runways)}'+(' · Infinite' if self.campaign.infinite else ''))
+        key=(band.number,remaining)
+        if key!=getattr(self,'campaign_draw_key',None):self.campaign_draw_key=key;self.request_draw()
+        if not self.airfield.alive:self.finish_run('loss')
+        elif self.campaign.awaiting_victory:self.finish_run('win')
+
+    def toggle_debug_kill(self):
+        was=self.debug_kill_mode
+        self.cancel_commands();self.debug_kill_mode=not was
+        self.debug_kill_button.configure(text='Cancel Kill Tool' if self.debug_kill_mode else 'Kill Tool',style='GameDestroy.TButton' if self.debug_kill_mode else 'TButton')
+        self.canvas.configure(cursor='crosshair' if self.debug_kill_mode else '')
+
+    def debug_kill_unit(self,unit):
+        if unit is None or not unit.alive:return False
+        self.combat.log_airfield_damage(self.elapsed)
+        if isinstance(unit,Aircraft):
+            unit.destroy()
+            if unit.enemy:self.combat.known_wrecks.add(id(unit))
+        else:unit.health=0
+        self.add_log(f'Debug killed {self.combat.unit_name(unit)}','status')
+        self.combat.log_airfield_damage(self.elapsed)
+        if self.run_started and self.airfield.alive:self.campaign.advance(self.elapsed)
+        self.refresh_campaign();self.process_game_events()
+        self.refresh_map_aircraft_buttons();self.refresh_inspector();self.request_draw()
+        return True
+
+    def debug_kill_at(self,event):
+        slot=self.aircraft_at(event.x,event.y)
+        if slot is not None:return self.debug_kill_unit(self.aircraft_for_slot(slot))
+        for weapon in [*self.combat.missiles,*self.combat.bombs,*self.combat.icbms]:
+            if not weapon.alive or not self.weapon_visible(weapon):continue
+            point=weapon.position(self.elapsed) if isinstance(weapon,Bomb) else (weapon.x,weapon.y)
+            if math.dist((event.x,event.y),self.pixel(*point))<=12:return self.debug_kill_unit(weapon)
+        for unit in reversed(self.visible_ground_units()):
+            if unit.alive and self.ground_target_hit(unit,event.x,event.y,max(10,22*self.building_factor())):return self.debug_kill_unit(unit)
+        x,y=self.world(event.x,event.y)
+        if abs(x-self.airfield.x)<=max(.2,self.airfield.runway_width/2) and abs(y-self.airfield.y)<=self.airfield.runway_length/2:return self.debug_kill_unit(self.airfield)
+        return False
+
+    def toggle_bands(self):
+        self.show_bands=not self.show_bands
+        self.bands_button.configure(style='GamePlay.TButton' if self.show_bands else 'TButton')
+        self.request_draw()
+
+    def draw_bands(self):
+        if not self.show_bands:return
+        cx,cy=self.pixel(self.airfield.x,self.airfield.y)
+        boundaries=[STATS['campaign']['safe_radius_nm']]+[b.outer for b in self.campaign.bands]
+        for i,radius in enumerate(boundaries):
+            r=radius*self.scale()
+            self.canvas.create_oval(cx-r,cy-r,cx+r,cy+r,outline='#6d839e',dash=(8,6),tags='campaign_bands')
+            self.canvas.create_text(cx,cy-r+12,text='Safe core' if i==0 else f'Band {i} · {radius:g} NM',fill=MUTED,tags='campaign_bands')
 
     def create_scroll_menu(self):
         host=ttk.Frame(self.menu_host)
@@ -894,7 +1087,7 @@ class GameMapPage(ttk.Frame):
     def show_left_menu(self,name,cancel=True):
         if cancel:self.cancel_commands()
         self.aircraft_menu_open=False;self.aircraft_panel.pack_forget()
-        for panel in (self.build_scroll_panel,self.airfield_scroll_panel,self.debug_panel,self.unit_list_panel,self.log_panel):panel.pack_forget()
+        for panel in (self.build_scroll_panel,self.airfield_scroll_panel,self.debug_scroll_panel,self.unit_list_panel,self.log_panel):panel.pack_forget()
         self.left_menu=name
         for key,button in self.left_menu_buttons.items():
             button.configure(style='GameSpeed.Selected.TButton' if key==('Unit List' if name=='Inspector' else name) else 'TButton')
@@ -908,7 +1101,7 @@ class GameMapPage(ttk.Frame):
                 self.aircraft_menu_open=True;self.aircraft_panel.pack(fill='both',expand=True)
                 self.refresh_aircraft_menu()
             else:
-                panel={'Build':self.build_scroll_panel,'Unit List':self.unit_list_panel,'Airfield':self.airfield_scroll_panel,'Log':self.log_panel}.get(name,self.debug_panel)
+                panel={'Build':self.build_scroll_panel,'Unit List':self.unit_list_panel,'Airfield':self.airfield_scroll_panel,'Log':self.log_panel}.get(name,self.debug_scroll_panel)
                 panel.pack(fill='both',expand=True)
                 if name=='Unit List':
                     self.unit_tree.selection_remove(self.unit_tree.selection())
@@ -930,13 +1123,13 @@ class GameMapPage(ttk.Frame):
         rows.extend(('friendly',f'plane{slot}',f'{slot+1} · {a.kind} · {a.state.title()}',a)
                     for slot,a in self.aircraft.items() if a.alive)
         rows.extend(('friendly',f'heli{h.id}',f'{h.name} · {h.state.title()}',h) for h in self.logistics.helicopters)
-        rows.extend(('friendly',f'ciws{c.id}',f'{c.name} #{c.id}',c) for c in self.ciws if c.alive)
+        rows.extend(('friendly',f'ciws{c.id}',f'{c.name} #{c.id}',c) for c in self.ciws if c.alive and c.visual_range_nm>0)
         rows.extend(('friendly',f'radar{r.id}',f'{r.name} #{r.id}',r) for r in self.radars if r.alive)
         rows.extend(('friendly',f'sam{s.id}',f'{s.name} #{s.id}',s) for s in self.sams if s.alive)
         for i,a in enumerate(self.combat.enemies):
             contact=self.combat.contact(a)
             if a.alive and contact is not None:
-                rows.append((contact.kind,f'enemy{i}',f'E{i+1} · {a.kind}',a))
+                rows.append((contact.kind,f'enemy{i}',f'{self.combat.aircraft_label(a)} · {a.kind}',a))
         for m in self.combat.icbms:
             contact=self.combat.contact(m)
             if m.alive and (contact is not None or self.weapon_visible(m)):
@@ -984,7 +1177,7 @@ class GameMapPage(ttk.Frame):
         if kind=='EWR':return False
         was=self.placing_enemy and self.enemy_spawn_kind==kind
         self.cancel_commands();self.placing_enemy=not was;self.enemy_spawn_kind=kind
-        {'Drone Launcher':self.enemy_drone_launcher_button,'ICBM':self.enemy_icbm_button,'ICBM Silo':self.enemy_silo_button,'Flak':self.enemy_flak_button,'SAAW':self.enemy_saaw_button,'Bomber':self.enemy_bomber_button,'Suicide Drone':self.drone_button,'Radar':self.enemy_radar_button,'SAM':self.enemy_sam_button,'Fighter':self.enemy_button}[kind].configure(style='GameSpeed.Selected.TButton' if self.placing_enemy else 'TButton')
+        {'Interceptor':self.enemy_interceptor_button,'LR Radar':self.enemy_lr_radar_button,'LR SAM':self.enemy_lr_sam_button,'CIWS':self.enemy_ciws_button,'Drone Launcher':self.enemy_drone_launcher_button,'ICBM':self.enemy_icbm_button,'ICBM Silo':self.enemy_silo_button,'Flak':self.enemy_flak_button,'SAAW':self.enemy_saaw_button,'Bomber':self.enemy_bomber_button,'Suicide Drone':self.drone_button,'Radar':self.enemy_radar_button,'SAM':self.enemy_sam_button,'Fighter':self.enemy_button}[kind].configure(style='GameSpeed.Selected.TButton' if self.placing_enemy else 'TButton')
         self.canvas.configure(cursor='crosshair' if self.placing_enemy else '')
         self.request_draw()
 
@@ -1104,7 +1297,7 @@ class GameMapPage(ttk.Frame):
 
     def loadout_unlocked(self,value):
         if value=='Empty':return True
-        for weapon in ('AIM-120','AIM-9','HARM','Sidearm'):
+        for weapon in ('AIM-120','AIM-9','AGM-88','Sidearm'):
             if weapon in value:return self.unlocked(weapon)
         for weight in map(int,STATS['bombs']):
             if str(weight) in value.replace(',',''):return self.unlocked(f'{weight} lb bomb')
@@ -1166,6 +1359,21 @@ class GameMapPage(ttk.Frame):
         s=STATS['ground_units'][key]
         return f'{key} · {dollars(s["price"])}'
 
+    def play_game_sound(self,event,position=None):
+        audio=getattr(self,'game_audio',None)
+        if audio is None or not self.winfo_ismapped():return
+        distance=0.
+        if position is not None:
+            width=max(1,self.canvas.winfo_width());height=max(1,self.canvas.winfo_height())
+            x,y=self.pixel(*position)
+            distance=max(abs(x-width/2)/(width/2),abs(y-height/2)/(height/2))
+        audio.play(event,getattr(self,'view_width',10),distance)
+
+    def toggle_game_mute(self):
+        self.game_audio.set_muted(not self.game_audio.muted)
+        self.app.game_audio_muted=self.game_audio.muted
+        self.mute_button.configure(text='Unmute' if self.game_audio.muted else 'Mute',style='GameMuted.TButton' if self.game_audio.muted else 'GameMute.TButton')
+
     def buy_aircraft(self,kind):
         slot=self.aircraft_slot
         old=self.aircraft.get(slot)
@@ -1175,6 +1383,7 @@ class GameMapPage(ttk.Frame):
         hardpoints=[value if self.loadout_unlocked(value) else loadout_label('2× AIM-9') for value in hardpoints]
         bays=[value if self.loadout_unlocked(value) and bomb_bay_allowed(kind,value) else loadout_label('4× 250 lb Bomb') for value in bays]
         self.spend_money(spec["price"],f'Buy {kind} #{slot+1}')
+        self.play_game_sound('buy_aircraft')
         self.aircraft[slot]=Aircraft(kind,list(hardpoints),list(bays),parking_slot=slot,state='parked',purchase_price=spec["price"])
         if old is not None and self.selected is old:self.selected=self.aircraft[slot]
         self.refresh_aircraft_menu();self.refresh_inspector()
@@ -1186,7 +1395,7 @@ class GameMapPage(ttk.Frame):
         if aircraft is None or not aircraft.in_hangar:return False
         refund=aircraft.purchase_price*STATS['economy']['sell_refund_fraction']
         self.money+=refund;self.add_log(f'Sell {aircraft.kind} #{slot+1} · +{dollars(refund)}','reward')
-        aircraft.destroy();del self.aircraft[slot]
+        aircraft.sold=True;aircraft.destroy();del self.aircraft[slot]
         if self.selected is aircraft:self.selected=self.airfield
         self.refresh_aircraft_menu();self.refresh_inspector()
         self.refresh_map_aircraft_buttons();self.request_draw()
@@ -1383,6 +1592,7 @@ class GameMapPage(ttk.Frame):
         if self.money<cost:return False
         self.spend_money(cost,f'{kind} upgrade L{level+1}','upgrade')
         setattr(self.airfield,attr,level+1)
+        self.play_game_sound('upgrade')
         self.logistics.sync(LOGISTICS_LEVELS[self.airfield.logistics_level-1],self.airfield)
         self.operations.ground_crew_level=self.airfield.ground_crew_level
         if kind=='Ground Crew':
@@ -1395,8 +1605,9 @@ class GameMapPage(ttk.Frame):
         return True
 
     def toggle_radar_power(self):
-        if not isinstance(self.selected,Radar) or not self.selected.alive:return
+        if not isinstance(self.selected,(Radar,Flak)) or not self.selected.alive:return
         self.selected.enabled=not self.selected.enabled
+        if isinstance(self.selected,Flak) and not self.selected.enabled:self.selected.attack_target=None;self.selected.shot_timer=0.
         self.coverage_key=None
         self.refresh_inspector();self.request_draw()
 
@@ -1421,6 +1632,7 @@ class GameMapPage(ttk.Frame):
         unit=unit_type(self.next_build_id('ciws',self.ciws),x,y)
         error=self.placement_error(unit)
         if error:self.inspector_text.set(error);return
+        self.play_game_sound('place_unit')
         self.spend_money(unit.price,f'Build {unit.name} #{unit.id}');self.ciws.append(unit);self.cancel_placement();self.selected=unit
         self.cash_text.set(dollars(self.money));self.refresh_inspector();self.request_draw()
         return unit
@@ -1430,6 +1642,7 @@ class GameMapPage(ttk.Frame):
         if unit is self.airfield:return f'Airfield Level {unit.level}'
         if isinstance(unit,(Airfield,LogisticsHelicopter,Missile,Bomb,ICBM)):return unit.name
         if isinstance(unit,Aircraft):return self.combat.unit_name(unit)
+        if isinstance(unit,EnemyRunway):return unit.name
         name=unit.name
         if getattr(unit,'enemy',False) and not name.startswith('Enemy '):name='Enemy '+name
         return f'{name} #{unit.id}'
@@ -1518,6 +1731,10 @@ class GameMapPage(ttk.Frame):
             self.inspector_text.set('')
         elif isinstance(self.selected,CIWS):
             self.refresh_ground_instruments(self.selected,'flak' if isinstance(self.selected,Flak) else 'ciws')
+            if isinstance(self.selected,Flak):
+                self.ewr_track_button.pack_forget()
+                self.radar_toggle_button.configure(text='Radar On' if self.selected.enabled else 'Radar Off',style='GamePlay.TButton' if self.selected.enabled else 'TButton',state='normal' if self.selected.alive else 'disabled')
+                if not self.selected.enemy or self.see_all:self.radar_controls.pack(fill='x')
             self.inspector_text.set(('Reloading: '+self.combat.reload_status(self.selected,self.elapsed)) if self.selected.enemy and self.combat.reload_status(self.selected,self.elapsed) else self.logistics.status(self.selected))
             if not self.selected.enemy or self.see_all:self.ciws_controls.pack(fill='x')
             for kind,b in self.ciws_target_buttons.items():
@@ -1552,7 +1769,10 @@ class GameMapPage(ttk.Frame):
         elif isinstance(self.selected,Factory):
             self.airfield_health.update_health(self.selected)
             self.airfield_health.pack(fill='x',before=self.inspector_label)
-            self.inspector_text.set('Destroyed' if not self.selected.alive else 'Ground')
+            if isinstance(self.selected,EnemyRunway):
+                r=self.selected
+                self.inspector_text.set('Runway destroyed · Waves stopped' if not r.alive else f'Band {r.band_number}\nWave {r.wave_number+1} in {max(0,math.ceil(r.next_wave-self.elapsed))}s\nAll runways must be destroyed to clear this band.')
+            else:self.inspector_text.set('Destroyed' if not self.selected.alive else 'Ground')
         elif isinstance(self.selected,Radar):
             if not self.selected.enemy or self.see_all:self.radar_controls.pack(fill='x')
             self.radar_toggle_button.configure(text='Radar On' if self.selected.enabled else 'Radar Off',
@@ -1584,7 +1804,7 @@ class GameMapPage(ttk.Frame):
             if not self.selected.early_warning:self.ewr_track_button.pack_forget()
             self.inspector_text.set('Click an enemy to track' if self.ewr_track_picker is self.selected else 'Tracking: '+self.combat.unit_name(self.selected.track_target) if self.selected.early_warning and self.selected.track_target is not None else '')
         elif isinstance(self.selected,SAMLauncher):
-            self.refresh_ground_instruments(self.selected,'pac3' if isinstance(self.selected,PAC3) else 'sam')
+            self.refresh_ground_instruments(self.selected,'pac3' if isinstance(self.selected,PAC3) else 'saaw' if isinstance(self.selected,SAAW) else 'sam')
             if isinstance(self.selected,PAC3):
                 p=self.selected
                 self.pac3_bearing_text.set(f'Bearing: {math.degrees(p.bearing)%360:03.0f}° → {math.degrees(p.desired_bearing)%360:03.0f}° · {p.radar_angle_deg:g}° cone')
@@ -1746,12 +1966,17 @@ class GameMapPage(ttk.Frame):
         self.refresh_inspector();self.request_draw()
 
     def cancel_placement(self):
+        self.debug_kill_mode=False
+        if hasattr(self,'debug_kill_button'):self.debug_kill_button.configure(text='Kill Tool',style='TButton')
         self.ewr_track_picker=None
         self.placing_factory=False;self.placing_enemy=False
+        for name in ('enemy_interceptor_button','enemy_lr_radar_button','enemy_lr_sam_button'):
+            if hasattr(self,name):getattr(self,name).configure(style='TButton')
         if hasattr(self,'enemy_button'):self.enemy_button.configure(style='TButton')
         if hasattr(self,'drone_button'):self.drone_button.configure(style='TButton')
         if hasattr(self,'enemy_bomber_button'):self.enemy_bomber_button.configure(style='TButton')
         if hasattr(self,'enemy_radar_button'):self.enemy_radar_button.configure(style='TButton')
+        if hasattr(self,'enemy_ciws_button'):self.enemy_ciws_button.configure(style='TButton')
         if hasattr(self,'enemy_flak_button'):self.enemy_flak_button.configure(style='TButton')
         if hasattr(self,'enemy_saaw_button'):self.enemy_saaw_button.configure(style='TButton')
         if hasattr(self,'enemy_sam_button'):self.enemy_sam_button.configure(style='TButton')
@@ -1813,7 +2038,7 @@ class GameMapPage(ttk.Frame):
             if self.elapsed-contact.seen>.2:continue
             bearing=math.atan2(contact.x-self.airfield.x,contact.y-self.airfield.y)%math.tau
             offset=(bearing-start)%math.tau or math.tau
-            if offset<=swept:self.app.sounds.play('sound9')
+            if offset<=swept:self.play_game_sound('radar_ping')
 
     def on_datalink(self,x,y,target=None):
         if target is not None and not (isinstance(target,Aircraft) and target.sensors_active):return False
@@ -1875,6 +2100,7 @@ class GameMapPage(ttk.Frame):
         self.aircraft_status_job=None
         if not self.active:return
         self.refresh_map_aircraft_buttons()
+        self.expire_aircraft_wrecks()
         self.aircraft_status_job=self.after(100,self.aircraft_status_tick)
 
     def release_shortcut(self,event):
@@ -1886,6 +2112,7 @@ class GameMapPage(ttk.Frame):
         self.shortcut_release_jobs[key]=self.after(10,released)
 
     def aircraft_shortcut(self,event):
+        if not self.run_started or self.run_result is not None:return
         if not self.active:return
         if event.widget.winfo_class() in ('Entry','TEntry','Text','TCombobox','Spinbox','TSpinbox'):return
         key=event.keysym
@@ -1916,7 +2143,7 @@ class GameMapPage(ttk.Frame):
         self.refresh_map_aircraft_buttons();self.refresh_inspector();self.request_draw()
 
     def aircraft_number(self,plane):
-        return next((str(slot+1) if slot>=0 else f'E{-slot}' for slot,a in self.map_aircraft() if a is plane),0)
+        return self.combat.aircraft_label(plane) if plane.enemy else next((str(slot+1) for slot,a in self.map_aircraft() if slot>=0 and a is plane),0)
 
     def refresh_follow_button(self):
         if not hasattr(self,'follow_button'):return
@@ -2019,6 +2246,12 @@ class GameMapPage(ttk.Frame):
     def cancel_commands(self):
         self.cancel_movement();self.cancel_placement()
 
+    def ground_target_hit(self,target,x,y,radius):
+        tx,ty=self.pixel(target.x,target.y)
+        if isinstance(target,EnemyRunway):
+            return abs(x-tx)<=max(7,target.runway_width*self.scale()/2) and abs(y-ty)<=target.runway_length*self.scale()/2
+        return math.hypot(x-tx,y-ty)<=radius
+
     def finish_loiter(self,event):
         if not self.drag or not isinstance(self.selected,Aircraft):return
         x,y,_=self.drag;center=self.world(x,y)
@@ -2079,6 +2312,7 @@ class GameMapPage(ttk.Frame):
         error=self.placement_error(sam)
         if error:self.inspector_text.set(error);return None
         self.spend_money(sam.price,f'Build {sam.name} #{sam.id}')
+        self.play_game_sound('place_unit')
         self.sams.append(sam)
         self.cancel_placement();self.selected=sam
         self.cash_text.set(dollars(self.money))
@@ -2091,6 +2325,7 @@ class GameMapPage(ttk.Frame):
         error=self.placement_error(radar)
         if error:self.inspector_text.set(error);return None
         self.spend_money(radar.price,f'Build {radar.name} #{radar.id}')
+        self.play_game_sound('place_unit')
         self.radars.append(radar)
         self.cancel_placement();self.selected=radar
         self.cash_text.set(dollars(self.money))
@@ -2121,6 +2356,7 @@ class GameMapPage(ttk.Frame):
     def set_active(self, active):
         if self.active and self.playing:self.tick_elapsed()
         self.active=active
+        if not active:self.game_audio.stop()
         self.last_tick=time.monotonic()
         self.ping_sweep_time=None
         if not active and self.job is not None:
@@ -2152,8 +2388,10 @@ class GameMapPage(ttk.Frame):
         self.schedule_tick()
 
     def toggle_play(self):
+        if not self.run_started or self.run_result is not None:return
         if self.playing and self.active:self.tick_elapsed()
         self.playing=not self.playing
+        if not self.playing:self.game_audio.stop()
         self.ping_sweep_time=None
         self.last_tick=time.monotonic()
         if not self.playing and self.job is not None:
@@ -2177,6 +2415,7 @@ class GameMapPage(ttk.Frame):
             self.ground_health_key=health_key;self.request_draw()
         self.logistics.advance([*self.sams,*self.ciws],self.airfield,seconds)
         self.elapsed=self.operations.time
+        self.refresh_campaign()
         self.process_game_events()
         self.refresh_auto_prompts()
         if self.rwr.update(self.aircraft.values(),[*self.combat.enemy_radars,*[s for s in self.combat.enemy_sams if isinstance(s,(SAAW,Flak))]],self.elapsed):self.request_draw()
@@ -2197,6 +2436,7 @@ class GameMapPage(ttk.Frame):
 
     def destroyed(self, event):
         if event.widget is not self:return
+        self.game_audio.close()
         if self.key_binding:self.winfo_toplevel().unbind('<KeyPress>',self.key_binding)
         if self.key_release_binding:self.winfo_toplevel().unbind('<KeyRelease>',self.key_release_binding)
         for job in self.shortcut_release_jobs.values():self.after_cancel(job)
@@ -2267,6 +2507,9 @@ class GameMapPage(ttk.Frame):
             self.request_draw()
 
     def release(self,event):
+        if self.debug_kill_mode:
+            if self.drag and math.hypot(event.x-self.drag[0],event.y-self.drag[1])<=3:self.debug_kill_at(event)
+            self.drag=None;return
         if getattr(self,'ignore_map_release',False):
             self.ignore_map_release=False;self.drag=None;return
         if self.ewr_track_picker is not None:
@@ -2280,7 +2523,7 @@ class GameMapPage(ttk.Frame):
                     for target in [*self.combat.factories,*self.combat.enemy_radars,*self.combat.enemy_sams]:
                         if not self.see_all and not (target.id in self.combat.known if isinstance(target,Factory) else id(target) in self.combat.known_ground):continue
                         x,y=self.pixel(target.x,target.y)
-                        if math.hypot(event.x-x,event.y-y)<=max(10,22*self.building_factor()):
+                        if self.ground_target_hit(target,event.x,event.y,max(10,22*self.building_factor())):
                             self.finish_attack(target);break
             elif self.movement_mode=='form_up':
                 slot=self.aircraft_at(event.x,event.y)
@@ -2295,22 +2538,10 @@ class GameMapPage(ttk.Frame):
             if self.placing_enemy:
                 if self.enemy_spawn_kind=='ICBM':
                     self.selected=self.combat.spawn_icbm(*self.world(event.x,event.y),target=self.airfield)
-                elif self.enemy_spawn_kind=='Drone Launcher':
-                    self.selected=self.combat.spawn_drone_launcher(*self.world(event.x,event.y))
-                elif self.enemy_spawn_kind=='ICBM Silo':
-                    self.selected=self.combat.spawn_silo(*self.world(event.x,event.y))
-                elif self.enemy_spawn_kind=='Radar':
-                    self.selected=Radar(len(self.combat.enemy_radars)+1,*self.world(event.x,event.y),enemy=True)
-                    self.combat.enemy_radars.append(self.selected)
-                elif self.enemy_spawn_kind=='Flak':
-                    self.selected=Flak(len(self.combat.enemy_sams)+1,*self.world(event.x,event.y),enemy=True,category='Vehicles',name='Enemy Flak Cannon')
-                    self.combat.enemy_sams.append(self.selected)
-                elif self.enemy_spawn_kind in ('SAM','SAAW'):
-                    unit_type=SAAW if self.enemy_spawn_kind=='SAAW' else SAMLauncher
-                    self.selected=unit_type(len(self.combat.enemy_sams)+1,*self.world(event.x,event.y),enemy=True)
-                    self.combat.enemy_sams.append(self.selected)
+                elif self.enemy_spawn_kind in ('Drone Launcher','ICBM Silo','Radar','LR Radar','SAM','LR SAM','CIWS','Flak','SAAW'):
+                    self.selected=self.spawn_campaign_ground(self.enemy_spawn_kind,*self.world(event.x,event.y))
                 else:
-                    spawn=self.combat.spawn_drone if self.enemy_spawn_kind=='Suicide Drone' else self.combat.spawn_bomber if self.enemy_spawn_kind=='Bomber' else self.combat.spawn_fighter
+                    spawn={'Fighter':self.combat.spawn_fighter,'Interceptor':self.combat.spawn_interceptor,'Bomber':self.combat.spawn_bomber,'Suicide Drone':self.combat.spawn_drone}[self.enemy_spawn_kind]
                     self.selected=spawn(*self.world(event.x,event.y))
                 self.refresh_inspector();self.request_draw()
             elif self.placing_factory:
@@ -2342,7 +2573,7 @@ class GameMapPage(ttk.Frame):
                 for target in self.combat.factories:
                     if not self.see_all and target.id not in self.combat.known:continue
                     tx,ty=self.pixel(target.x,target.y)
-                    if math.hypot(event.x-tx,event.y-ty)<=max(7,18*self.building_factor()*.4):self.selected=target;break
+                    if self.ground_target_hit(target,event.x,event.y,max(7,18*self.building_factor()*.4)):self.selected=target;break
                 for slot,a in self.map_aircraft():
                     if not a.alive:continue
                     display=self.track_display(a)
@@ -2380,6 +2611,12 @@ class GameMapPage(ttk.Frame):
             occupant=occupants.get(slot)
             self.canvas.create_oval(x-3,y-3,x+3,y+3,outline=occupant.color if occupant else MUTED,
                                     width=1,tags='game_aircraft')
+
+    def draw_aircraft_unit(self,a,x,y,heading,filled,size):
+        co,si=math.cos(heading),math.sin(heading)
+        points=[coord for px,py in self.aircraft_vertices
+                for coord in (x+(px*co+py*si)*size,y-(-px*si+py*co)*size)]
+        self.canvas.create_polygon(*points,fill=a.color if filled else '',outline=a.color,width=1,tags='game_aircraft')
 
     def render_aircraft(self):
         states=tuple((slot,a.alive) for slot,a in self.aircraft.items())
@@ -2443,15 +2680,12 @@ class GameMapPage(ttk.Frame):
             x,y=pixel(ax,ay)
             if not a.alive:continue
             if not -15<x<width+15 or not -15<y<height+15:continue
-            co,si=math.cos(heading),math.sin(heading)
-            points=[coord for px,py in self.aircraft_vertices
-                    for coord in (x+(px*co+py*si)*size,y-(-px*si+py*co)*size)]
-            c.create_polygon(*points,fill=a.color if filled else '',outline=a.color,width=1,tags='game_aircraft')
+            self.draw_aircraft_unit(a,x,y,heading,filled,size)
             if a.state=='servicing':
                 c.create_rectangle(x-16,y+13,x+16,y+18,fill=PANEL,outline=MUTED,tags='game_aircraft')
                 if a.service_progress>0:c.create_rectangle(x-15,y+14,x-15+30*a.service_progress,y+17,fill='#72d693' if a.crew_active else '#ffc05a',outline='',tags='game_aircraft')
             if self.selected is a:c.create_oval(x-10,y-10,x+10,y+10,outline='#ffffff',tags='game_aircraft')
-            c.create_text(x+9,y-9,text=str(slot+1) if slot>=0 else f'E{-slot}',fill=a.color,font=('Helvetica',9,'bold'),anchor='w',tags='game_aircraft')
+            c.create_text(x+9,y-9,text=str(slot+1) if slot>=0 else self.combat.aircraft_label(a),fill=a.color,font=('Helvetica',9,'bold'),anchor='w',tags='game_aircraft')
         self.render_combat()
         self.render_logistics()
         self.render_rwr()
@@ -2495,7 +2729,7 @@ class GameMapPage(ttk.Frame):
             reason='Low fuel' if request['reason']=='fuel' else 'Winchester — out of ammo'
             card=ttk.Frame(self.auto_prompt_panel,padding=5);card.pack(fill='x',pady=3)
             ttk.Label(card,text=f'{slot+1} · {a.kind}',font=('Helvetica',10,'bold')).pack(anchor='w')
-            ttk.Label(card,text=f'{reason}\n{action}',wraplength=220,justify='left',foreground=TEXT if unlocked else MUTED).pack(anchor='w',pady=3)
+            ttk.Label(card,text=f'{reason}\n{action}',wraplength=220,justify='left',foreground=TEXT).pack(anchor='w',pady=3)
             row=ttk.Frame(card);row.pack(fill='x')
             ttk.Button(row,text='Confirm',command=lambda n=slot:self.answer_auto_prompt(n,True)).pack(side='left',fill='x',expand=True)
             ttk.Button(row,text='Ignore',command=lambda n=slot:self.answer_auto_prompt(n,False)).pack(side='left',fill='x',expand=True,padx=(4,0))
@@ -2617,7 +2851,7 @@ class GameMapPage(ttk.Frame):
     def rotate_ciws(self):
         dt=max(0,self.elapsed-getattr(self,'ciws_last_elapsed',self.elapsed))
         self.ciws_last_elapsed=self.elapsed
-        for unit in [*self.ciws,*[u for u in self.combat.enemy_sams if isinstance(u,Flak)]]:
+        for unit in [*self.ciws,*[u for u in self.combat.enemy_sams if isinstance(u,CIWS)]]:
             if not unit.alive:continue
             target=unit.attack_target
             if target is not None and target.alive:
@@ -2643,7 +2877,7 @@ class GameMapPage(ttk.Frame):
         if isinstance(unit,Flak):self.draw_flak(unit,ghost);return
         if not ghost and self.ground_dot_required(unit):return
         x,y=self.pixel(unit.x,unit.y);f=self.building_factor()*.25
-        color='#586070' if not unit.alive else CIWS_COLOR
+        color='#586070' if not unit.alive else '#ef6262' if unit.enemy else CIWS_COLOR
         if ghost and self.placement_error(unit):color='#ff7777'
         self.canvas.create_oval(x-15*f,y-15*f,x+15*f,y+15*f,outline=color,width=2,tags='ciws_icon')
         self.canvas.create_oval(x-6*f,y-6*f,x+6*f,y+6*f,fill=PANEL,outline=color,width=2,tags='ciws_icon')
@@ -2668,7 +2902,7 @@ class GameMapPage(ttk.Frame):
     def draw_missile_attack_line(self):
         missile=self.selected
         if not isinstance(missile,(Missile,ICBM)) or not missile.alive or not self.weapon_visible(missile) or getattr(missile,'terminal',False):return False
-        target=getattr(missile,'decoy',None) or missile.target
+        target=missile.guidance_target if isinstance(missile,Missile) else missile.target
         if not target.alive:return False
         point=None
         if target is getattr(missile,'decoy',None):
@@ -2686,12 +2920,81 @@ class GameMapPage(ttk.Frame):
         self.canvas.create_line(*self.pixel(missile.x,missile.y),*self.pixel(*point),fill='#ef6262',dash=(6,4),width=1.5,arrow='last',tags='game_combat')
         return True
 
+    def aircraft_wreck_visible(self,aircraft):
+        if aircraft.alive:return False
+        if getattr(aircraft,'death_wall_time',None) is None:aircraft.death_wall_time=time.monotonic()
+        return time.monotonic()-aircraft.death_wall_time<STATS['world']['aircraft_wreck_lifetime_seconds']
+
+    def expire_aircraft_wrecks(self):
+        for a in [*self.aircraft.values(),*self.combat.enemies]:
+            if not a.alive and not self.aircraft_wreck_visible(a):self.canvas.delete(f'aircraft_wreck_{id(a)}')
+
+    def draw_enemy_structure(self,target,show_label=True):
+        c=self.canvas;f=self.building_factor()*.4
+        x,y=self.pixel(target.x,target.y)
+        color='#ef6262' if target.alive else '#586070'
+        if isinstance(target,EnemyRunway):
+            half_width=max(4,target.runway_width*self.scale()/2);half_length=target.runway_length*self.scale()/2
+            c.create_rectangle(x-half_width,y-half_length,x+half_width,y+half_length,fill=PANEL,outline=color,width=2,tags='game_combat')
+            c.create_line(x,y-half_length+3,x,y+half_length-3,fill=color,dash=(5,4),tags='game_combat')
+            if show_label:c.create_text(x,y+half_length+14,text=target.name,fill=color,tags='game_combat')
+            if self.selected is target:c.create_rectangle(x-half_width-4,y-half_length-4,x+half_width+4,y+half_length+4,outline='#ffffff',tags='game_combat')
+            return
+        if isinstance(target,DroneLauncher):
+            c.create_rectangle(x-20*f,y-15*f,x+20*f,y+15*f,fill=PANEL,outline=color,width=2,tags='game_combat')
+            for offset in (-12,0,12):
+                dx=x+offset*f
+                c.create_line(dx,y-10*f,dx,y+8*f,fill=color,width=2,tags='game_combat')
+                c.create_line(dx-4*f,y,dx,y-5*f,dx+4*f,y,fill=color,width=2,tags='game_combat')
+            if show_label:c.create_text(x,y+28*f,text='Drone Launcher',fill=color,tags='game_combat')
+            if self.selected is target:c.create_rectangle(x-24*f,y-19*f,x+24*f,y+19*f,outline='#ffffff',tags='game_combat')
+            return
+        if isinstance(target,ICBMSilo):
+            c.create_oval(x-20*f,y-20*f,x+20*f,y+20*f,fill=PANEL,outline=color,width=2,tags='game_combat')
+            c.create_line(x-14*f,y-14*f,x+14*f,y+14*f,fill=color,width=2,tags='game_combat')
+            c.create_line(x+14*f,y-14*f,x-14*f,y+14*f,fill=color,width=2,tags='game_combat')
+            if show_label:c.create_text(x,y+28*f,text='ICBM Silo',fill=color,tags='game_combat')
+            if self.selected is target:c.create_oval(x-24*f,y-24*f,x+24*f,y+24*f,outline='#ffffff',tags='game_combat')
+            return
+        if isinstance(target,Bunker):
+            c.create_arc(x-20*f,y-20*f,x+20*f,y+16*f,start=0,extent=180,style='arc',outline=color,width=2,tags='game_combat')
+            c.create_line(x-20*f,y-2*f,x-20*f,y+12*f,x+20*f,y+12*f,x+20*f,y-2*f,fill=color,width=2,tags='game_combat')
+            c.create_rectangle(x-5*f,y+3*f,x+5*f,y+12*f,outline=color,tags='game_combat')
+            if self.selected is target:c.create_rectangle(x-23*f,y-23*f,x+23*f,y+16*f,outline='#ffffff',tags='game_combat')
+            return
+        c.create_rectangle(x-18*f,y-9*f,x+18*f,y+12*f,fill=PANEL,outline=color,width=1.5,tags='game_combat')
+        c.create_line(x-18*f,y-9*f,x-6*f,y-16*f,x-6*f,y-9*f,x+6*f,y-16*f,x+6*f,y-9*f,x+18*f,y-9*f,
+                      fill=color,width=1.5,tags='game_combat')
+        c.create_rectangle(x+10*f,y-24*f,x+15*f,y-9*f,fill=PANEL,outline=color,tags='game_combat')
+        if self.selected is target:c.create_rectangle(x-22*f,y-28*f,x+22*f,y+16*f,outline='#ffffff',tags='game_combat')
+
+    def draw_icbm_unit(self,m,show_label=True):
+        c=self.canvas
+        x,y=self.pixel(m.x,m.y)
+        if self.view_width>=75:
+            color='#ffe66d' if int(self.elapsed*2)%2==0 else '#ef6262'
+            c.create_oval(x-7,y-7,x+7,y+7,fill=color,outline='',tags='game_combat')
+            if self.selected is m:c.create_oval(x-11,y-11,x+11,y+11,outline='#ffffff',tags='game_combat')
+            return
+        ux=math.sin(m.heading);uy=-math.cos(m.heading)
+        def body_point(forward,side):return x+ux*forward-uy*side,y+uy*forward+ux*side
+        outline=[body_point(-14,-2.3),body_point(10,-2.3),body_point(16,0),body_point(10,2.3),body_point(-14,2.3)]
+        c.create_polygon(*[v for point in outline for v in point],fill='#ff4f64',outline='#ce3549',tags='game_combat')
+        for side in (-1,1):
+            fin=[body_point(-13,side*2),body_point(-15,side*5),body_point(-7,side*2)]
+            c.create_polygon(*[v for point in fin for v in point],fill='#da3d51',tags='game_combat')
+        c.create_line(*body_point(-11,-.7),*body_point(7,-.7),fill='#ff9ba6',width=1,tags='game_combat')
+        c.create_line(*body_point(6,-2.3),*body_point(6,2.3),fill='#f9b7be',tags='game_combat')
+        if show_label:c.create_text(x,y+25,text=m.name,fill='#ff4f64',tags='game_combat')
+        if self.selected is m:c.create_oval(x-19,y-19,x+19,y+19,outline='#ffffff',tags='game_combat')
+
     def render_combat(self):
         c=self.canvas;c.delete('game_combat')
-        for a in self.combat.enemies:
-            if a.alive or not (self.see_all or self.combat.contact(a) is not None or id(a) in getattr(self.combat,'known_wrecks',set())):continue
+        for a in [*self.aircraft.values(),*self.combat.enemies]:
+            if not self.aircraft_wreck_visible(a):continue
+            if a.alive or not (not a.enemy or self.see_all or self.combat.contact(a) is not None or id(a) in getattr(self.combat,'known_wrecks',set())):continue
             x,y=self.pixel(a.x,a.y)
-            c.create_oval(x-3.5,y-3.5,x+3.5,y+3.5,fill='#586070',outline='',tags='game_combat')
+            c.create_oval(x-3.5,y-3.5,x+3.5,y+3.5,fill='#586070',outline='',tags=('game_combat',f'aircraft_wreck_{id(a)}'))
         for unit in self.visible_ground_units():
             if not self.ground_dot_required(unit):continue
             x,y=self.ground_pixel(unit)
@@ -2704,35 +3007,7 @@ class GameMapPage(ttk.Frame):
             if not self.see_all and target.id not in self.combat.known:continue
             if self.ground_dot_required(target):continue
             if f<.08:continue
-            x,y=self.pixel(target.x,target.y)
-            color='#ef6262' if target.alive else '#586070'
-            if isinstance(target,DroneLauncher):
-                c.create_rectangle(x-20*f,y-15*f,x+20*f,y+15*f,fill=PANEL,outline=color,width=2,tags='game_combat')
-                for offset in (-12,0,12):
-                    dx=x+offset*f
-                    c.create_line(dx,y-10*f,dx,y+8*f,fill=color,width=2,tags='game_combat')
-                    c.create_line(dx-4*f,y,dx,y-5*f,dx+4*f,y,fill=color,width=2,tags='game_combat')
-                c.create_text(x,y+28*f,text='Drone Launcher',fill=color,tags='game_combat')
-                if self.selected is target:c.create_rectangle(x-24*f,y-19*f,x+24*f,y+19*f,outline='#ffffff',tags='game_combat')
-                continue
-            if isinstance(target,ICBMSilo):
-                c.create_oval(x-20*f,y-20*f,x+20*f,y+20*f,fill=PANEL,outline=color,width=2,tags='game_combat')
-                c.create_line(x-14*f,y-14*f,x+14*f,y+14*f,fill=color,width=2,tags='game_combat')
-                c.create_line(x+14*f,y-14*f,x-14*f,y+14*f,fill=color,width=2,tags='game_combat')
-                c.create_text(x,y+28*f,text='ICBM Silo',fill=color,tags='game_combat')
-                if self.selected is target:c.create_oval(x-24*f,y-24*f,x+24*f,y+24*f,outline='#ffffff',tags='game_combat')
-                continue
-            if isinstance(target,Bunker):
-                c.create_arc(x-20*f,y-20*f,x+20*f,y+16*f,start=0,extent=180,style='arc',outline=color,width=2,tags='game_combat')
-                c.create_line(x-20*f,y-2*f,x-20*f,y+12*f,x+20*f,y+12*f,x+20*f,y-2*f,fill=color,width=2,tags='game_combat')
-                c.create_rectangle(x-5*f,y+3*f,x+5*f,y+12*f,outline=color,tags='game_combat')
-                if self.selected is target:c.create_rectangle(x-23*f,y-23*f,x+23*f,y+16*f,outline='#ffffff',tags='game_combat')
-                continue
-            c.create_rectangle(x-18*f,y-9*f,x+18*f,y+12*f,fill=PANEL,outline=color,width=1.5,tags='game_combat')
-            c.create_line(x-18*f,y-9*f,x-6*f,y-16*f,x-6*f,y-9*f,x+6*f,y-16*f,x+6*f,y-9*f,x+18*f,y-9*f,
-                          fill=color,width=1.5,tags='game_combat')
-            c.create_rectangle(x+10*f,y-24*f,x+15*f,y-9*f,fill=PANEL,outline=color,tags='game_combat')
-            if self.selected is target:c.create_rectangle(x-22*f,y-28*f,x+22*f,y+16*f,outline='#ffffff',tags='game_combat')
+            self.draw_enemy_structure(target)
         attackers=[*self.aircraft.values(),*self.combat.enemies,*self.sams,*self.combat.enemy_sams]
         for a in attackers:
             if not a.alive or not self.see_all and self.selected is not a:continue
@@ -2754,23 +3029,7 @@ class GameMapPage(ttk.Frame):
                 c.create_line(*self.pixel(a.x,a.y),*self.pixel(*point),fill='#ef6262',dash=(6,4),width=1.5,tags='game_combat')
         for m in self.combat.icbms:
             if not self.weapon_visible(m):continue
-            x,y=self.pixel(m.x,m.y)
-            if self.view_width>=75:
-                color='#ffe66d' if int(self.elapsed*2)%2==0 else '#ef6262'
-                c.create_oval(x-7,y-7,x+7,y+7,fill=color,outline='',tags='game_combat')
-                if self.selected is m:c.create_oval(x-11,y-11,x+11,y+11,outline='#ffffff',tags='game_combat')
-                continue
-            ux=math.sin(m.heading);uy=-math.cos(m.heading)
-            def body_point(forward,side):return x+ux*forward-uy*side,y+uy*forward+ux*side
-            outline=[body_point(-14,-2.3),body_point(10,-2.3),body_point(16,0),body_point(10,2.3),body_point(-14,2.3)]
-            c.create_polygon(*[v for point in outline for v in point],fill='#ff4f64',outline='#ce3549',tags='game_combat')
-            for side in (-1,1):
-                fin=[body_point(-13,side*2),body_point(-15,side*5),body_point(-7,side*2)]
-                c.create_polygon(*[v for point in fin for v in point],fill='#da3d51',tags='game_combat')
-            c.create_line(*body_point(-11,-.7),*body_point(7,-.7),fill='#ff9ba6',width=1,tags='game_combat')
-            c.create_line(*body_point(6,-2.3),*body_point(6,2.3),fill='#f9b7be',tags='game_combat')
-            c.create_text(x,y+25,text=m.name,fill='#ff4f64',tags='game_combat')
-            if self.selected is m:c.create_oval(x-19,y-19,x+19,y+19,outline='#ffffff',tags='game_combat')
+            self.draw_icbm_unit(m)
         for shell in self.combat.flak_shells:
             if not self.weapon_visible(shell):continue
             x,y=self.pixel(*shell.position(self.elapsed));c.create_oval(x-2,y-2,x+2,y+2,fill='#ffb347',outline='',tags='game_combat')
@@ -2958,6 +3217,7 @@ class GameMapPage(ttk.Frame):
     def draw_sam(self,sam,ghost=False):
         if isinstance(sam,PAC3):self.draw_pac3(sam,ghost);return
         if isinstance(sam,Flak):self.draw_flak(sam,ghost);return
+        if isinstance(sam,CIWS):self.draw_ciws(sam,ghost);return
         if isinstance(sam,SAAW):
             if self.see_all or id(sam) in self.combat.identified_ground:self.draw_saaw(sam)
             return
@@ -2982,7 +3242,7 @@ class GameMapPage(ttk.Frame):
                     items,x,y=self.sam_glyphs[id(sam)]
                     for item,points in zip(items,self.pac3_turret_points(sam,x,y)):self.canvas.coords(item,*points)
                 continue
-            if isinstance(sam,Flak):continue
+            if isinstance(sam,CIWS):continue
             target=next((m.target for m in self.combat.missiles if m.owner is sam and m.target.alive),None)
             if target is None and isinstance(sam,SAAW):target=sam.attack_target
             if target is not None and target.alive:
@@ -3000,6 +3260,7 @@ class GameMapPage(ttk.Frame):
     def radar_footprints(self):
         # The airfield and visual detection areas are not radar sources.
         sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.radars if r.radar_emitting]
+        sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.ciws if isinstance(g,Flak) and g.radar_emitting)
         sources.extend((a,(a.x,a.y,a.radar_range_nm,a.heading,a.radar_angle_deg))
                        for a in self.aircraft.values() if a.sensors_active and a.radar_range_nm and a.kind!='AWACS')
         if self.placing_radar and self.pointer:
@@ -3053,6 +3314,7 @@ class GameMapPage(ttk.Frame):
             if unit.min_engagement_range_nm:circles.append((unit.min_engagement_range_nm,SAM_COLOR,(),False))
         elif isinstance(unit,CIWS):
             circles.extend(((unit.visual_range_nm,'#6cd9af',(),True),(unit.range_nm,'#ffe66d',(),False)))
+            if isinstance(unit,Flak) and unit.radar_emitting:radar=(unit.radar_range_nm,0.,360.)
             if unit.min_engagement_range_nm:circles.append((unit.min_engagement_range_nm,'#ffe66d',(),False))
         for radius,color,dash,dotted in circles:
             if radius:self.draw_selected_range_path(footprint(unit.x,unit.y,radius),color,dash,dotted)
@@ -3067,6 +3329,7 @@ class GameMapPage(ttk.Frame):
         enemy_sources=[]
         if self.radar_overlay and self.see_all:
             enemy_sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.combat.enemy_radars if r.radar_emitting]
+            enemy_sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.combat.enemy_sams if isinstance(g,(Flak,SAAW)) and g.radar_emitting)
             enemy_sources.extend((a,(a.x,a.y,a.radar_range_nm,a.heading,a.radar_angle_deg)) for a in self.combat.enemies if a.sensors_active and a.radar_range_nm and a.kind!='AWACS')
         key=(tuple(spec for source,spec in sources),tuple(spec for source,spec in enemy_sources))
         now=time.monotonic()
@@ -3084,10 +3347,10 @@ class GameMapPage(ttk.Frame):
         c=self.canvas
         if not self.visual_overlay:
             c.delete('visual_coverage');self.visual_coverage_items=[];return
-        friendly=tuple((a.x,a.y,a.visual_range_nm) for a in self.aircraft.values() if a.alive and a.sensors_active)+tuple((c.x,c.y,c.visual_range_nm) for c in self.ciws if c.alive)
+        friendly=tuple((a.x,a.y,a.visual_range_nm) for a in self.aircraft.values() if a.alive and a.sensors_active)+tuple((c.x,c.y,c.visual_range_nm) for c in self.ciws if c.alive and c.visual_range_nm>0)
         if self.airfield.alive:friendly+=((self.airfield.x,self.airfield.y,self.airfield.visual_range_nm),)
         enemy=tuple((a.x,a.y,a.visual_range_nm) for a in self.combat.enemies if a.alive and a.sensors_active) if self.see_all else ()
-        if self.see_all:enemy+=tuple((g.x,g.y,g.visual_range_nm) for g in self.combat.enemy_sams if isinstance(g,Flak) and g.alive)
+        if self.see_all:enemy+=tuple((g.x,g.y,g.visual_range_nm) for g in self.combat.enemy_sams if isinstance(g,CIWS) and g.alive and g.visual_range_nm>0)
         key=(friendly,enemy,self.see_all);now=time.monotonic()
         if key!=self.visual_coverage_key and (not self.playing or self.visual_coverage_key is None
             or self.see_all!=self.visual_coverage_key[2] or now-self.visual_coverage_updated>=.2):
@@ -3189,6 +3452,7 @@ class GameMapPage(ttk.Frame):
                     _,py=self.pixel(0,v)
                     c.create_line(0,py,width,py,fill='#2c3c51')
                     c.create_text(7,py-5,text=f'{v:g}',anchor='w',fill=MUTED,font=('Helvetica',8))
+        self.draw_bands()
         if self.placing_radar or self.placing_sam or self.placing_ciws:
             cx,cy=self.pixel(self.airfield.x,self.airfield.y);radius=BUILD_RADIUS_NM*self.scale()
             c.create_oval(cx-radius,cy-radius,cx+radius,cy+radius,fill=self.muted_map_color('#ffe65c',.03),outline='#ffe65c',dash=(7,5),width=1,tags='building_area')

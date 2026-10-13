@@ -17,18 +17,24 @@ class GroundInspector(tk.Canvas):
             if self.unit is not None:self.render()
 
     def update_unit(self,unit,mode,aircraft,elapsed,weapons=()):
-        if self.unit is not unit or self.mode!=mode:self.scope_updated=-math.inf
+        state=(getattr(unit,'enabled',True),getattr(unit,'radar_range_nm',unit.range_nm))
+        if self.unit is not unit or self.mode!=mode or state!=getattr(self,'scope_state',None):self.scope_updated=-math.inf
+        self.scope_state=state
         self.unit=unit;self.mode=mode;self.aircraft=list(aircraft);self.weapons=list(weapons);self.elapsed=elapsed
         self.refresh_scope_contacts();self.render()
 
     def scope_point(self,aircraft):
-        unit=self.unit;radius=unit.range_nm
+        unit=self.unit;radius=self.scope_range
+        if radius<=0:return None
         if not aircraft.alive or (self.mode!='pac3' and not getattr(aircraft,'sensors_active',True)):return None
         x,y=aircraft.position(self.elapsed) if hasattr(aircraft,'position') else (aircraft.x,aircraft.y)
         dx,dy=x-unit.x,y-unit.y
         if math.hypot(dx,dy)>radius:return None
-        if self.mode=='ewr' and not unit.radar_detects(x,y):return None
+        if self.mode in ('radar','ewr','flak','saaw') and not unit.radar_detects(x,y):return None
         return 135+dx/radius*96,191-dy/radius*96
+
+    @property
+    def scope_range(self):return getattr(self.unit,'radar_range_nm',self.unit.range_nm)
 
     def refresh_scope_contacts(self):
         if self.unit is None or self.mode=='sam':return False
@@ -72,7 +78,7 @@ class GroundInspector(tk.Canvas):
         elif self.mode in ('ewr','pac3'):
             offset=0
             cy=191
-            self.create_rectangle(8,79+offset,262,302+offset,fill='#171226' if self.mode=='pac3' else '#071c16',outline='#786195' if self.mode=='pac3' else '#416d58',width=2)
+            self.create_rectangle(8,89+offset,262,302+offset,fill='#171226' if self.mode=='pac3' else '#071c16',outline='#786195' if self.mode=='pac3' else '#416d58',width=2)
             half=math.radians(unit.radar_angle_deg)/2
             points=[(135,cy)]+[(135+96*math.sin(unit.bearing-half+2*half*i/40),cy-96*math.cos(unit.bearing-half+2*half*i/40)) for i in range(41)]
             if self.mode=='pac3':
@@ -95,7 +101,7 @@ class GroundInspector(tk.Canvas):
             self.draw_scope_contacts()
             self.sweep=self.create_line(135,191,135,95,fill='#59e887',width=2,tags='scope_sweep')
             self.create_oval(132,188,138,194,fill='#59e887',outline='')
-            self.create_text(135,310,text=f'{unit.range_nm:g} NM · Blue friendly / Red enemy',fill=MUTED,font=('Helvetica',9))
+            self.create_text(135,310,text=f'{self.scope_range:g} NM · Blue friendly / Red enemy',fill=MUTED,font=('Helvetica',9))
             base_height=330
             if self.mode in ('ciws','flak'):
                 self.create_text(135,347,text=f'AMMO {unit.ammo}/{unit.ammo_capacity}',fill=MUTED,font=('Helvetica',9,'bold'))
@@ -104,6 +110,22 @@ class GroundInspector(tk.Canvas):
                     x=7+(i%30)*8.8;y=365+(i//30)*13
                     self.create_line(x,y,x,y+8,fill='#ffe66d' if i<unit.ammo else '#303e50',width=2)
                 base_height=365+math.ceil(unit.ammo_capacity/30)*13+12
+            if self.mode=='saaw':
+                self.create_text(135,347,text=f'AMMO {unit.ammo}/{unit.ammo_capacity}',fill=MUTED,font=('Helvetica',9,'bold'))
+                count=max(1,unit.ammo_capacity)
+                for i in range(unit.ammo_capacity):
+                    x=135+(i-(count-1)/2)*min(47,230/count);color='#b18aff' if i<unit.ammo else '#405168'
+                    self.create_polygon(x-6,380,x,367,x+6,380,x+6,415,x-6,415,fill=color,outline='')
+                    self.create_polygon(x-6,399,x-12,417,x-6,413,x+6,413,x+12,417,x+6,399,fill=color,outline='')
+                self.create_text(135,439,text=f'GUN AMMO {unit.gun_ammo}/{unit.gun_ammo_capacity}',fill=MUTED,font=('Helvetica',9,'bold'))
+                for i in range(unit.gun_ammo_capacity):
+                    x=7+(i%30)*8.8;y=457+(i//30)*13
+                    self.create_line(x,y,x,y+8,fill='#ffe66d' if i<unit.gun_ammo else '#303e50',width=2)
+                base_height=457+math.ceil(unit.gun_ammo_capacity/30)*13+12
+        if self.mode!='sam':
+            title='SCOPE' if self.mode in ('ciws','pac3') else 'RADAR'
+            self.create_rectangle(95,68,175,83,fill=BG,outline='')
+            self.create_text(135,76,text=title,fill=TEXT,font=('Helvetica',10,'bold'))
         width=self.winfo_width();factor=width/270 if width>1 else 1.
         if factor!=1:self.scale('all',0,0,factor,factor)
         height=round(base_height*factor)
