@@ -1,9 +1,13 @@
 """Automatic ground-unit resupply, using NM and simulation seconds."""
 from dataclasses import dataclass
 import math
+from game_settings import STATS
 
-LOGISTICS_LEVELS = (1,2,3,4,5)
-LOGISTICS_UPGRADE_COSTS = (1000,2500,5000,10000)
+LOGISTICS_LEVELS = tuple(STATS['logistics']['helicopters_by_level'])
+LOGISTICS_UPGRADE_COSTS = tuple(STATS['upgrades']['prices']['Logistics'])
+
+def helipad_position(airfield):
+    return airfield.x+.5,airfield.y-.6
 
 @dataclass
 class LogisticsHelicopter:
@@ -13,7 +17,7 @@ class LogisticsHelicopter:
     heading: float = 0.
     state: str = 'parked'
     target: object = None
-    speed: float = 175.
+    speed: float = STATS['logistics']['speed_knots']
     color: str = '#56deef'
 
     @property
@@ -29,7 +33,7 @@ class LogisticsFleet:
 
     def sync(self,count,airfield):
         while len(self.helicopters)<count:
-            self.helicopters.append(LogisticsHelicopter(len(self.helicopters)+1,airfield.x,airfield.y))
+            self.helicopters.append(LogisticsHelicopter(len(self.helicopters)+1,*helipad_position(airfield)))
 
     def requested(self,unit):
         return any(u is unit for u in self.requests) or any(h.state=='outbound' and h.target is unit for h in self.helicopters)
@@ -56,13 +60,13 @@ class LogisticsFleet:
             # Complete legs with leftover time, including zero-distance deliveries.
             while True:
                 if h.state=='parked':
-                    h.x,h.y=airfield.x,airfield.y
+                    h.x,h.y=helipad_position(airfield)
                     if not airfield.alive or not waiting:break
                     h.target=waiting.pop(0);h.state='outbound'
                     self.requests[:]=[u for u in self.requests if u is not h.target]
                 if h.state=='outbound' and (not h.target.alive or h.target.ammo>=h.target.ammo_capacity):
                     h.target=None;h.state='returning'
-                destination=(h.target.x,h.target.y) if h.state=='outbound' else (airfield.x,airfield.y)
+                destination=(h.target.x,h.target.y) if h.state=='outbound' else helipad_position(airfield)
                 dx,dy=destination[0]-h.x,destination[1]-h.y
                 distance=math.hypot(dx,dy)
                 if distance>1e-9:h.heading=math.atan2(dx,dy)
@@ -74,6 +78,7 @@ class LogisticsFleet:
                 h.x,h.y=destination;remaining=max(0.,remaining-travel)
                 if h.state=='outbound':
                     h.target.ammo=h.target.ammo_capacity
+                    h.target.health=min(h.target.max_health,h.target.health+STATS['logistics']['heal_per_delivery'])
                     if hasattr(h.target,'shot_timer'):h.target.shot_timer=0.
                     h.target=None;h.state='returning'
                 else:h.state='parked'

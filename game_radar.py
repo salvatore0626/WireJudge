@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 
-def footprint(x, y, radius, heading=0., angle=360.):
+def footprint(x, y, radius, heading=0., angle=360., inner_radius=0.):
     if angle >= 360:
         angles=np.linspace(0,math.tau,97)[:-1]
         return np.column_stack((x+radius*np.cos(angles),y+radius*np.sin(angles)))
@@ -11,7 +11,20 @@ def footprint(x, y, radius, heading=0., angle=360.):
     # Counterclockwise winding, including the two radial sides of the cone.
     angles=np.linspace(heading+half,heading-half,25)
     arc=np.column_stack((x+radius*np.sin(angles),y+radius*np.cos(angles)))
+    if inner_radius:
+        inner=np.column_stack((x+inner_radius*np.sin(angles[::-1]),y+inner_radius*np.cos(angles[::-1])))
+        return np.vstack((arc,inner))
     return np.vstack(((x,y),arc))
+
+
+def engagement_footprints(x,y,radius,heading,angle,inner_radius=0.):
+    """Split a cone with a minimum range into convex bands for coverage merging."""
+    if not inner_radius:return [footprint(x,y,radius,heading,angle)]
+    half=math.radians(angle/2)
+    angles=np.linspace(heading+half,heading-half,max(2,math.ceil(angle/6)+1))
+    def point(r,a):return x+r*math.sin(a),y+r*math.cos(a)
+    return [np.asarray((point(inner_radius,a),point(radius,a),point(radius,b),point(inner_radius,b)))
+            for a,b in zip(angles,angles[1:])]
 
 
 def union_outline(polygons):

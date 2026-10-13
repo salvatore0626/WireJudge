@@ -1,33 +1,34 @@
 """Scattered enemy world and gameplay RWR estimates (not a radar track)."""
 import math
 import random
-from game_aircraft import rtb_reserve
+from game_settings import STATS
 
-WORLD_RADIUS_NM=10000.
+WORLD_RADIUS_NM=STATS['world']['radius_nm']
+RWR_RANGE_NM=STATS['world']['rwr_range_nm']
 
 class RWR:
     def __init__(self,seed=None):
-        self.rng=random.Random(seed);self.updated=-20.;self.estimates={}
+        self.rng=random.Random(seed);self.updated=-STATS['world']['rwr_update_seconds'];self.estimates={}
 
     def update(self,aircraft,radars,now):
-        if now-self.updated<20-1e-9:return False
+        if now-self.updated<STATS['world']['rwr_update_seconds']-1e-9:return False
         self.updated=now;self.estimates={}
         observers=[a for a in aircraft if a.alive and a.sensors_active and not a.enemy]
         for radar in radars:
             if not radar.radar_emitting:continue
-            seen=[a for a in observers if math.dist((a.x,a.y),(radar.x,radar.y))<=200.]
+            seen=[a for a in observers if math.dist((a.x,a.y),(radar.x,radar.y))<=RWR_RANGE_NM]
             if not seen:continue
             spread=0.
             for i,a in enumerate(seen):
                 for b in seen[i+1:]:
-                    baseline=min(1.,math.dist((a.x,a.y),(b.x,b.y))/50.)
+                    baseline=min(1.,math.dist((a.x,a.y),(b.x,b.y))/STATS['world']['rwr_baseline_nm'])
                     ba=math.atan2(radar.x-a.x,radar.y-a.y);bb=math.atan2(radar.x-b.x,radar.y-b.y)
                     spread=max(spread,baseline*abs(math.sin(ba-bb)))
             quality=1+(len(seen)-1)*spread
-            # A single receiver has ±50% range and ±20° direction uncertainty.
+            # A single receiver has ±25% range and ±10° direction uncertainty.
             a=seen[0];dx,dy=radar.x-a.x,radar.y-a.y;distance=math.hypot(dx,dy)
-            bearing=math.atan2(dx,dy)+self.rng.uniform(-math.radians(20),math.radians(20))/quality
-            distance*=1+self.rng.uniform(-.5,.5)/quality
+            bearing=math.atan2(dx,dy)+self.rng.uniform(-math.radians(STATS['world']['rwr_bearing_error_degrees']),math.radians(STATS['world']['rwr_bearing_error_degrees']))/quality
+            distance*=1+self.rng.uniform(-STATS['world']['rwr_range_error_fraction'],STATS['world']['rwr_range_error_fraction'])/quality
             self.estimates[id(radar)]=(radar,a.x+math.sin(bearing)*distance,a.y+math.cos(bearing)*distance,quality)
         return True
 
@@ -51,5 +52,4 @@ def scatter_world(combat,radar_type,sam_type,seed=None):
         x,y=point(150.,9980.);angle=rng.uniform(0,math.tau)
         a=combat.spawn_fighter(x+20*math.sin(angle),y+20*math.cos(angle))
         a.orbit_center=(x,y);a.orbit_radius=20.;a.heading=angle+math.pi/2
-        # Spawn with enough reserve to fly home from this large world.
-        a.fuel+=rtb_reserve(a)
+        # Enemy aircraft have unlimited fuel.
