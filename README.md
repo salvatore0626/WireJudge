@@ -1,61 +1,68 @@
 # Wire Judge V1.3
 by STRAYDOG0626
 
-Open a VTOL VR `.vtr` replay to view carrier approaches, score landings, and watch the replay on a 2D map.
+View and score VTOL VR `.vtr` carrier approaches, replay flights on a 2D map, or play **Airfield Defense** in the Game tab.
 
-## Start the app
+## Run
 
-**Windows EXE:** Open `Wire_Judge.exe`. No Python or library installation is needed.
+**Windows:** Open `Wire_Judge.exe`. No Python installation needed. Build it yourself with Python 3.11+ and `build_windows.bat`.
 
-To build the EXE yourself, install Python 3.11 or newer on Windows and run `build_windows.bat`. The first build needs internet access. The finished app is `dist/Wire_Judge.exe`.
+**Linux build:** On Ubuntu 24.04+ or a compatible Mint version, install prerequisites, then build from the full project folder:
 
-**Run from source:** Install Python 3.11 or newer, then open PowerShell or Terminal in the project folder.
+```sh
+sudo apt update
+sudo apt install python3 python3-venv python3-tk binutils pulseaudio-utils
+bash build_linux.sh
+./dist/Wire_Judge
+```
+
+The first build needs internet access. Build Linux releases on Linux for the intended CPU architecture; test on the distributions you support. Distribute `dist/Wire_Judge` with `dist/game_stats.json`. If needed, run `chmod +x Wire_Judge` after extracting. Sound uses `paplay` or `aplay`.
+
+**Run from source:** Use Python 3.11+ with Tkinter. Open a terminal in the project folder:
 
 Windows:
-
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe app.py
 ```
 
-Mac:
-
+Mac/Linux:
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python app.py
 ```
 
-## First use
+## Replays
 
-1. Click **Select Replay** and open a `.vtr` file.
-2. Click **Select Carrier** and choose the carrier.
-3. Select **Case 1** or **Case 3**.
-4. Choose a player's attempt to view it. Set **Wire Caught** or **Bolter** when known.
-
-Windows replays are usually in:
+Select a replay, choose its carrier, then select **Case 1** or **Case 3** and an attempt. Set **Wire Caught** or **Bolter** when known. Windows replay files are usually under:
 
 ```text
 %APPDATA%\Boundless Dynamics, LLC\VTOLVR\SaveData\Replays\
 ```
 
-Wire choices save automatically. Attempt edits save with **Save & Apply** and return when you reopen the same replay and carrier.
-
-## Tabs
-
 | Tab | Use |
 | --- | --- |
-| Approach Viewer | View attempts, compare approaches, inspect graphs, and set wires. |
-| Replay Map | Play the replay, inspect aircraft or missiles, and follow a selected aircraft. |
-| Scoreboard | View all, best, or latest scores. Export selected attempts to an Excel file in Downloads. |
-| Attempt Editor | Add, delete, or trim attempts using the map and timeline. |
-| Settings | Adjust graphs, replay display, point values, application options, and carrier configuration. |
+| Approach Viewer | Inspect graphs, Black Box metrics, wires and approach comparisons. |
+| Replay Map | Play flights, inspect aircraft/missiles and follow a selection. |
+| Scoreboard | View all/best/latest scores; Export selected attempts to Excel in Downloads. |
+| Attempt Editor | Add, delete or trim attempts; Save & Apply to keep edits. |
+| Game | Airfield Defense campaign. No replay required. |
+| Settings | Graphs, scoring, display, sound, application and carrier options. |
 
-## Main controls
+Shift-click attempts to compare up to four. Click graphs with Pan/Zoom off to inspect values. Double-click an attempt or bottom timestamp to open Replay Map. Drag maps to pan; scroll to zoom; Home returns Replay Map to the carrier. Wire selections and saved attempt edits persist.
 
-- **Shift-click attempts** to compare up to four. Click without Shift to return to a single attempt.
-- **Graph buttons** show or hide graphs. Enable **Black Box** and use its dropdown to select metrics.
-- **Click a graph** with Pan and Zoom off to show the red cursor and values. Double-click a bottom timestamp or an attempt to open it in Replay Map.
-- **Maps:** drag to pan, scroll to zoom, and use **Home** to return to the carrier. **Follow** tracks your selection in Replay Map.
-- **Attempt Editor:** drag the Start/Stop handles to trim an attempt, then click **Save & Apply**. **Reset Changes** discards unsaved edits.
+## Airfield Defense
+
+Build defenses, buy aircraft in Hangar, and destroy enemy airfields while protecting yours. Upgrade the airfield to unlock more units and weapons. Campaign zones get harder; survivors carry into the next zone, with optional continued play after victory.
+
+- **Direct To, Loiter, Patrol:** plot movement orders; cursor measurements use Mil speed. Drag a loiter to set its radius.
+- **RTB & Redeploy:** return for repairs, refueling and rearming, then resume the previous movement order.
+- **Unit List:** click a unit to center the map and open its inspector. **Zones** toggles campaign rings.
+- **Objectives:** earn ordered mission rewards and persistent achievements. **Shift + = (+)** opens the debug confirmation; enabling debug disables new achievements for that run.
+- Mute and Game fullscreen controls are at the map's bottom right; Escape exits fullscreen.
+
+Edit balance, campaign composition, objectives and building descriptions with `Game_Settings_Editor.bat` on Windows, or `.venv/bin/python game_config_editor.py` on Mac/Linux. Compare Bands supports side-by-side editing. Save and restart Wire Judge to apply changes.
+
+Application settings and achievements live in `~/.wire_judge/` (Windows: `%USERPROFILE%\.wire_judge\`). Game balance stays in `game_stats.json` beside the executable or source files; rebuilding preserves an existing `dist/game_stats.json`.
