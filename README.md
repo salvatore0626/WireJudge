@@ -55,14 +55,4 @@ Shift-click attempts to compare up to four. Click graphs with Pan/Zoom off to in
 
 ## Airfield Defense
 
-Build defenses, buy aircraft in Hangar, and destroy enemy airfields while protecting yours. Upgrade the airfield to unlock more units and weapons. Campaign zones get harder; survivors carry into the next zone, with optional continued play after victory.
-
-- **Direct To, Loiter, Patrol:** plot movement orders; cursor measurements use Mil speed. Drag a loiter to set its radius.
-- **RTB & Redeploy:** return for repairs, refueling and rearming, then resume the previous movement order.
-- **Unit List:** click a unit to center the map and open its inspector. **Zones** toggles campaign rings.
-- **Objectives:** earn ordered mission rewards and persistent achievements. **Shift + = (+)** opens the debug confirmation; enabling debug disables new achievements for that run.
-- Mute and Game fullscreen controls are at the map's bottom right; Escape exits fullscreen.
-
-Edit balance, campaign composition, objectives and building descriptions with `Game_Settings_Editor.bat` on Windows, or `.venv/bin/python game_config_editor.py` on Mac/Linux. Compare Bands supports side-by-side editing. Save and restart Wire Judge to apply changes.
-
-Application settings and achievements live in `~/.wire_judge/` (Windows: `%USERPROFILE%\.wire_judge\`). Game balance stays in `game_stats.json` beside the executable or source files; rebuilding preserves an existing `dist/game_stats.json`.
+Build defenses, buy aircraft in Hangar, and destroy enemy airfields while protecting yours. Upgrade the airfield to unlock more units and weapons. 
