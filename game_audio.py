@@ -4,7 +4,7 @@ import time
 from game_settings import STATS
 from sound_effects import SoundEffects
 
-UI_EVENTS={'buy_aircraft','place_unit','upgrade','radar_ping'}
+UI_EVENTS={'buy_aircraft','place_unit','upgrade','radar_ping','objective_complete','achievement_unlocked','kill_reward'}
 
 
 def zoom_gain(width,settings):
@@ -27,16 +27,23 @@ def center_gain(frame_distance,settings):
     return edge*fade**power
 
 
+def kill_reward_gain(reward,settings):
+    """Linear payout scaling, clamped at the configured reward anchors."""
+    low=settings['min_reward'];high=settings['max_reward']
+    fraction=max(0.,min(1.,(reward-low)/(high-low)))
+    return settings['min_volume_multiplier']+(settings['max_volume_multiplier']-settings['min_volume_multiplier'])*fraction
+
+
 class GameAudio:
     def __init__(self,options=None,player=None,clock=time.monotonic):
         self.settings=STATS['audio'];self.clock=clock;self.last={};self.muted=False
         self.player=player or SoundEffects(options,polyphonic=True,max_voices=self.settings['max_voices'])
 
-    def play(self,event,width=10,frame_distance=0.):
+    def play(self,event,width=10,frame_distance=0.,volume_multiplier=1.):
         if self.muted:return False
         if not self.settings['enabled'] or event not in self.settings['events']:return False
         spec=self.settings['events'][event];now=self.clock()
-        gain=self.settings['master_volume']*spec['volume']
+        gain=self.settings['master_volume']*spec['volume']*max(0.,volume_multiplier)
         if event not in UI_EVENTS:gain*=zoom_gain(width,self.settings)*center_gain(frame_distance,self.settings)
         if gain<=0 or now-self.last.get(event,-math.inf)<spec['cooldown_seconds']:return False
         self.last[event]=now

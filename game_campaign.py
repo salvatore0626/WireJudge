@@ -167,7 +167,7 @@ class Campaign:
         runway.wave_number+=1
         runway.next_wave=now+runway.interval
         runway.interval*=1+self.settings['wave_interval_growth_fraction']
-        self.combat.events.append((now,f'{self.combat.unit_name(runway)} assembling wave {runway.wave_number} · {len(members)} aircraft',0,'status'))
+        self.combat.events.append((now,f'{self.combat.unit_name(runway)} assembling wave {runway.wave_number} · {len(members)} aircraft',0,'enemy_wave'))
         return members
 
     def advance(self,now):
@@ -200,7 +200,7 @@ class Campaign:
         self.infinite=True;self.awaiting_victory=False;self.generate(now)
 
     def observe(self,friendly,extra_enemy=()):
-        enemy=[*extra_enemy,*self.combat.enemies,*self.combat.factories,*self.combat.enemy_radars,*self.combat.enemy_sams,*self.combat.icbms]
+        enemy=[u for u in [*extra_enemy,*self.combat.enemies,*self.combat.factories,*self.combat.enemy_radars,*self.combat.enemy_sams,*self.combat.icbms] if getattr(u,'enemy',False)]
         for units,team in ((enemy,True),(friendly,False)):
             for unit in units:
                 if not unit.alive and not getattr(unit,'campaign_counted_death',False) and not getattr(unit,'sold',False):

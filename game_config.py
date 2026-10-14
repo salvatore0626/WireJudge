@@ -455,12 +455,40 @@ def apply_balance_update(data):
     return data
 
 
+OBJECTIVE_DEFAULTS=[
+ {'id':'build_flak','title':'Build a flak cannon.','type':'build','target':'Flak','amount':1,'weapon':'Any','reward':1000},
+ {'id':'buy_fighter','title':'Buy a fighter from the Hangar menu.','type':'build','target':'Fighter','amount':1,'weapon':'Any','reward':1000},
+ {'id':'bomb_factories','title':'Destroy 3 Factories using bombs.','type':'kill','target':'Factory','amount':3,'weapon':'Bombs','reward':2500},
+ {'id':'enemy_airfield','title':'Locate and destroy the enemy airfield.','type':'kill','target':'Airfield','amount':1,'weapon':'Any','reward':10000}]
+
+PLAYER_SILO_DEFAULTS={'health':150,'price':5000,'power':5,'min_engagement_range_nm':35,'reload_seconds':600,'countdown_seconds':10}
+PLAYER_WARHEAD_DEFAULTS={
+    'Conventional':{'price':5000,'blast_radius_nm':1,'center_damage':500,'edge_damage':20},
+    'Cluster':{'price':12000,'coverage_radius_nm':10,'burst_distance_nm':10,'count':8,'max_per_target':3,'damage':100,'damage_spread_fraction':0.3,'submunition_health':5,'impact_radius_nm':0.18},
+    'Nuclear':{'price':20000,'blast_radius_nm':15,'center_damage':1000,'edge_damage':10}}
+
+
 def migrate_stats(data):
     """Accept older balance files without discarding customized values."""
+    data.setdefault('objectives',deepcopy(OBJECTIVE_DEFAULTS))
+    for objective in data['objectives']:
+        if objective.get('weapon')=='HARM':objective['weapon']='AGM-88'
+        if objective.get('type')=='upgrade' and objective.get('target')=='Power':objective['target']='Generator'
+    data.setdefault('logistics',{}).setdefault('reload_speed_multipliers_by_level',[1,1.5,2.5,3.5,5])
+    data.setdefault('economy',{}).setdefault('kill_rewards',{}).setdefault('Airfield',10000)
+    data.setdefault('ground_units',{}).setdefault('Missile Silo',deepcopy(PLAYER_SILO_DEFAULTS))
+    data.setdefault('player_warheads',deepcopy(PLAYER_WARHEAD_DEFAULTS))
+    data.setdefault('player_strike_missile',{key:data['icbm'][key] for key in ('health','launch_speed_knots','speed_knots','acceleration_knots_per_second','hit_radius_nm')})
+    unlocks=data.get('upgrades',{}).get('airfield_unlocks',{})
+    if not any('Missile Silo' in values for values in unlocks.values()):unlocks.setdefault('3',[]).append('Missile Silo')
     data.setdefault('audio',deepcopy(AUDIO_DEFAULTS))
     data['audio'].setdefault('events',{})
     data['audio']['events'].setdefault('drone_impact',deepcopy(AUDIO_DEFAULTS['events']['drone_impact']))
     data['audio']['events'].setdefault('radar_ping',deepcopy(AUDIO_DEFAULTS['events']['radar_ping']))
+    for event in ('silo_conventional_impact','silo_cluster_impact','silo_nuclear_impact','objective_complete','achievement_unlocked','kill_reward'):
+        data['audio']['events'].setdefault(event,deepcopy(AUDIO_DEFAULTS['events'][event]))
+    data['audio'].setdefault('kill_reward_scaling',{})
+    for key,value in AUDIO_DEFAULTS['kill_reward_scaling'].items():data['audio']['kill_reward_scaling'].setdefault(key,value)
     for key in ('center_falloff_enabled','edge_volume','silence_distance_frames','center_falloff_exponent'):
         data['audio'].setdefault(key,AUDIO_DEFAULTS[key])
     for key,value in {'command_turn_speed_fraction':0.65,'command_turn_angle_degrees':10,'command_turn_deceleration_knots_per_second':20,'fast_turn_multiplier':1.1}.items():
@@ -510,6 +538,9 @@ def load_stats(path=STATS_PATH):
         migrate_stats(data)
         _validate(data, SCHEMA, 'settings')
         audio=data['audio']
+        scaling=audio['kill_reward_scaling']
+        if scaling['max_reward']<=scaling['min_reward']:raise ValueError('audio.kill_reward_scaling: max reward must exceed min reward')
+        if scaling['max_volume_multiplier']<scaling['min_volume_multiplier']:raise ValueError('audio.kill_reward_scaling: max volume multiplier must be at least min volume multiplier')
         if not audio['full_volume_zoom_nm']<audio['quiet_zoom_nm']<audio['barely_audible_zoom_nm']:raise ValueError('audio: zoom anchors must increase')
         if audio['barely_audible_volume']>audio['quiet_volume']:raise ValueError('audio: barely audible volume must not exceed quiet volume')
         if audio['silence_distance_frames']<=1:raise ValueError('audio.silence_distance_frames must be greater than 1')
@@ -537,6 +568,28 @@ def load_stats(path=STATS_PATH):
             if 'max_inflight_missiles' in unit and unit['max_inflight_missiles']<1:raise ValueError(f'ground_units.{k}.max_inflight_missiles: must be positive')
         for k,spec in data['missiles'].items():
             if spec['launch_range_nm']>spec['max_range_nm']:raise ValueError(f'missiles.{k}: launch range must not exceed maximum range')
+        ids=set()
+        upgrade_targets={'Airfield','Generator','Factory','Hangars','Ground Crew','Logistics'}
+        objective_targets={'upgrade':upgrade_targets,
+            'build':(set(data['friendly_aircraft'])|set(data['ground_units']))-{'Airfield'},
+            'kill':set(data['enemy_aircraft'])|set(data['enemy_ground_units'])|{'Airfield'},
+            'locate':set(data['enemy_aircraft'])|set(data['enemy_ground_units'])|{'Airfield','ICBM'}}
+        weapons={'Any','Bombs','AIM-120','AIM-9','AGM-88','Sidearm','CIWS','Flak','Conventional','Cluster','Nuclear',*[f'{w} lb Bomb' for w in data['bombs']]}
+        for o in data['objectives']:
+            if not o['id'].strip() or o['id'] in ids:raise ValueError('Objectives need unique nonempty IDs')
+            ids.add(o['id'])
+            if not o['title'].strip() or o['type'] not in ('build','kill','upgrade','locate'):raise ValueError('Objectives need a title and build, kill, upgrade or locate type')
+            if o['amount']<1:raise ValueError('Objective amount must be at least 1')
+            if o['target'] not in objective_targets[o['type']]:raise ValueError(f'Invalid objective target: {o["target"]}')
+            if o['type']=='upgrade' and o['amount']>5:raise ValueError('Upgrade objective level must be at most 5')
+            if o['weapon'] not in weapons:raise ValueError('Invalid objective weapon filter')
+        strike=data['player_strike_missile']
+        if strike['launch_speed_knots']>strike['speed_knots']:raise ValueError('player_strike_missile: launch speed must not exceed top speed')
+        for name in ('Conventional','Nuclear'):
+            warhead=data['player_warheads'][name]
+            if warhead['edge_damage']>warhead['center_damage']:raise ValueError(f'player_warheads.{name}: edge damage must not exceed center damage')
+        cluster=data['player_warheads']['Cluster']
+        if cluster['count']<1 or cluster['max_per_target']<1:raise ValueError('Cluster: count and maximum per target must be positive')
         options=data['aircraft_behavior']['engagement_range_options_nm']
         if not options or any(x<=0 for x in options):raise ValueError('engagement_range_options_nm must contain positive ranges')
         for k,loadout in {**data['default_loadouts'],**data['enemy_default_loadouts']}.items():
@@ -638,3 +691,26 @@ SCHEMA['world']['coverage_refresh_seconds']='positive'
 SCHEMA['missiles']['MIM-23']=SCHEMA['missiles'].pop('SAM')
 SCHEMA['missiles']['MIM-104']=SCHEMA['missiles'].pop('LR SAM')
 SCHEMA['missiles']['AIM-120']['pitbull_range_nm']='positive'
+SCHEMA['economy']['kill_rewards']['Airfield']='number'
+
+SCHEMA['ground_units']['Missile Silo']={'health':'positive','price':'number','power':'integer','min_engagement_range_nm':'number','reload_seconds':'positive','countdown_seconds':'positive'}
+SCHEMA['player_strike_missile']={key:'positive' for key in ('health','launch_speed_knots','speed_knots','acceleration_knots_per_second','hit_radius_nm')}
+SCHEMA['player_warheads']={name:{key:('integer' if key in ('count','max_per_target') else 'fraction' if key=='damage_spread_fraction' else 'number' if key in ('price','center_damage','edge_damage','damage') else 'positive') for key in values} for name,values in PLAYER_WARHEAD_DEFAULTS.items()}
+
+for _name,_volume,_cooldown in (('conventional',0.9,0.06),('cluster',0.65,0.04),('nuclear',1.0,0.5)):
+    _event=f'silo_{_name}_impact'
+    AUDIO_DEFAULTS['events'][_event]={'file':f'game_{_event}','volume':_volume,'cooldown_seconds':_cooldown}
+    SCHEMA['audio']['events'][_event]={'file':'text','volume':'fraction','cooldown_seconds':'number'}
+
+SCHEMA['logistics']['reload_speed_multipliers_by_level']={'$list':'positive','$length':5}
+
+SCHEMA['objectives']={'$list':{'id':'text','title':'text','type':'text','target':'text','amount':'integer','weapon':'text','reward':'number'},'$length':None}
+AUDIO_DEFAULTS['events']['objective_complete']={'file':'game_objective_complete','volume':0.8,'cooldown_seconds':0}
+SCHEMA['audio']['events']['objective_complete']={'file':'text','volume':'fraction','cooldown_seconds':'number'}
+
+AUDIO_DEFAULTS['events']['achievement_unlocked']={'file':'game_achievement_unlocked','volume':0.8,'cooldown_seconds':0}
+AUDIO_DEFAULTS['events']['kill_reward']={'file':'game_kill_reward','volume':0.8,'cooldown_seconds':0}
+AUDIO_DEFAULTS['kill_reward_scaling']={'min_reward':0,'max_reward':10000,'min_volume_multiplier':0.2,'max_volume_multiplier':1.0}
+for _event in ('achievement_unlocked','kill_reward'):
+    SCHEMA['audio']['events'][_event]={'file':'text','volume':'fraction','cooldown_seconds':'number'}
+SCHEMA['audio']['kill_reward_scaling']={key:'number' for key in AUDIO_DEFAULTS['kill_reward_scaling']}

@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 import math
 import random
+import time
 from game_aircraft import Aircraft, intercept_point
 
 from game_settings import STATS, ground_stats
@@ -286,8 +287,9 @@ class Shrapnel:
 
 class CombatWorld:
     def __init__(self,seed=None):
+        self.player_silos=[];self.strike_blasts=[];self.nuclear_clouds=[]
         self.factories=[];self.enemies=[];self.friendly_aircraft=[];self.icbms=[];self.next_icbm_id=1
-        self.events=[];self.kill_ids=set();self.unit_states={};self.visible_ground_contacts=set()
+        self.events=[];self.progress_kills=[];self.spotted_units=set();self.nuclear_launches=0;self.kill_ids=set();self.unit_states={};self.visible_ground_contacts=set()
         self.bombs=[];self.missiles=[];self.flares=[];self.explosions=[];self.flak_shells=[];self.shrapnel=[]
         self.known=set();self.known_wrecks=set();self.contacts={False:{},True:{}}
         self.radars=[];self.sams=[];self.ciws=[];self.bullets=[];self.rng=random.Random(seed);self.last_advance=0.
@@ -331,16 +333,20 @@ class CombatWorld:
         name=getattr(unit,'name',type(unit).__name__);number=getattr(unit,'id',None)
         return f'{name} #{number}' if number is not None else name
 
-    def record_kill(self,owner,target,now):
+    def record_kill(self,owner,target,now,weapon=None):
         if target.alive or getattr(target,'kill_recorded',False):return
         target.kill_recorded=True
+        target.kill_was_spotted=(target.id in self.known if isinstance(target,Factory) else id(target) in self.known_ground or id(target) in self.spotted_units or id(target) in self.contacts[False])
+        self.progress_kills.append((owner,target,weapon or getattr(owner,'stats_key','Any')))
+        if getattr(target,'death_wall_time',None) is None:target.death_wall_time=time.monotonic()
         if isinstance(target,(Missile,ICBM)):self.emit_sound('missile_explosion',(target.x,target.y))
         elif isinstance(target,Bomb):self.emit_sound(f'bomb_{target.weight}',target.position(now))
         if isinstance(target,ICBM) and not getattr(owner,'enemy',False):target.intercepted=True
         self.kill_ids.add(id(target))
         reward=0
         if not getattr(owner,'enemy',False) and getattr(target,'enemy',False):
-            if isinstance(target,ICBMSilo):reward=STATS['economy']['kill_rewards']['ICBM Silo']
+            if hasattr(target,'band_number') and hasattr(target,'wave_counts'):reward=STATS['economy']['kill_rewards']['Airfield']
+            elif isinstance(target,ICBMSilo):reward=STATS['economy']['kill_rewards']['ICBM Silo']
             elif isinstance(target,Bunker):reward=STATS['economy']['kill_rewards']['Bunker']
             elif isinstance(target,Factory):reward=STATS['economy']['kill_rewards']['Factory']
             elif isinstance(target,Aircraft):reward=STATS['economy']['kill_rewards'].get(target.kind,0)
@@ -445,6 +451,7 @@ class CombatWorld:
                            (a.kind=='AWACS' and airborne(target) and a.radar_detects(target.x,target.y)) for a in observers)
                 old=contacts.get(id(target))
                 if datalink or visual:
+                    if not team:self.spotted_units.add(id(target))
                     contact=old or Contact(target,now,'visual',target.x,target.y,target.heading)
                     contact.seen=now;contact.kind='datalink' if datalink else 'visual'
                     contact.x=target.x;contact.y=target.y;contact.heading=target.heading
@@ -459,6 +466,7 @@ class CombatWorld:
     def launch_sams(self,now):
         busy={(m.owner.enemy,id(m.target)) for m in self.missiles}
         for sam in [*self.sams,*self.enemy_sams]:
+            if getattr(sam,'logistics_reload_remaining',0)>0:continue
             if not sam.alive or not getattr(sam,'enabled',True) or sam.ammo<=0 or 'max_inflight_missiles' not in sam.stats:continue
             if sum(m.owner is sam for m in self.missiles)>=sam.stats['max_inflight_missiles']:continue
             if now-getattr(sam,'last_missile_shot',-math.inf)<sam.stats['shot_interval_seconds']-1e-9:continue
@@ -620,6 +628,8 @@ class CombatWorld:
             self.campaign.advance(now)
             aircraft.extend(a for a in self.enemies if not any(a is old for old in aircraft))
         self.reload_enemies(now)
+        from game_player_silo import advance_silos
+        advance_silos(self,now)
         self.launch_icbms(now)
         aircraft.extend(self.launch_drones(now))
         self.current_aircraft=list(aircraft)
@@ -860,7 +870,7 @@ class CombatWorld:
                     damage=round(base*self.rng.uniform(1-spread,1+spread))
                     hit.health=max(0.,hit.health-damage)
                     if hit.health<=0 and isinstance(hit,Aircraft):hit.destroy()
-                    self.record_kill(m.owner,hit,now)
+                    self.record_kill(m.owner,hit,now,m.kind)
                 else:hit.alive=False
                 self.explode_missile(m,now);return False
             if m.radar_memory_point is not None and passed(m.radar_memory_point):
@@ -872,60 +882,95 @@ class CombatWorld:
 
     def advance_ciws(self,now,dt):
         candidates=[*getattr(self,'friendly_aircraft',()),*self.enemies,*self.icbms,*self.missiles,*self.bombs]
+        # Snapshot target positions/eligibility once; the grid is rebuilt each step.
+        # A bullet can hit any opposing unit, regardless of the gun's filters.
+        grid={False:{},True:{}}
+        for order,target in enumerate(candidates):
+            aircraft=isinstance(target,Aircraft)
+            if not target.alive or aircraft and not airborne(target):continue
+            x,y=(target.x,target.y) if aircraft else target.position(now)
+            enemy=target.enemy if aircraft else target.owner.enemy
+            category=target.category if aircraft else 'Missiles' if isinstance(target,Missile) else 'Bombs'
+            row=(order,target,x,y,category)
+            grid[enemy].setdefault((math.floor(x),math.floor(y)),[]).append(row)
+        def nearby(enemy,left,bottom,right,top):
+            cells=grid[enemy];lx,ly,hx,hy=math.floor(left),math.floor(bottom),math.floor(right),math.floor(top)
+            rows=[]
+            if (hx-lx+1)*(hy-ly+1)>len(cells)*2:
+                # Avoid walking a huge empty rectangle at high playback speeds.
+                for (x,y),bucket in cells.items():
+                    if lx<=x<=hx and ly<=y<=hy:rows.extend(bucket)
+            else:
+                for x in range(lx,hx+1):
+                    for y in range(ly,hy+1):rows.extend(cells.get((x,y),()))
+            return rows
         guns=[*self.ciws,*[u for u in self.enemy_sams if hasattr(u,'gun_ammo') or 'rounds_per_second' in u.stats]]
+        bullet_speed=STATS['guns']['bullet_speed_knots'];dispersion=math.radians(STATS['guns']['dispersion_degrees'])
+        ranges={}
         for gun in guns:
+            if getattr(gun,'logistics_reload_remaining',0)>0:
+                gun.attack_target=None;gun.shot_timer=0.;continue
             if not gun.alive or getattr(gun,'shot_kind',None)=='flak':continue
             ammo_attribute='gun_ammo' if hasattr(gun,'gun_ammo') else 'ammo'
-            gun_range=getattr(gun,'gun_range_nm',gun.range_nm)
+            gun_range=getattr(gun,'gun_range_nm',gun.range_nm);ranges[id(gun)]=gun_range
             if getattr(gun,ammo_attribute)<=0:
                 gun.attack_target=None;gun.shot_timer=0.;continue
-            targets=[t for t in candidates if t.alive and (t.enemy if isinstance(t,Aircraft) else t.owner.enemy)!=gun.enemy
-                     and (airborne(t) if isinstance(t,Aircraft) else True)
-                     and (t.category if isinstance(t,Aircraft) else 'Missiles' if isinstance(t,Missile) else 'Bombs') in gun.preferred_targets
-                     and gun.min_engagement_range_nm<=math.dist((gun.x,gun.y),(t.position(now) if not isinstance(t,Aircraft) else (t.x,t.y)))<=gun_range]
-            gun.attack_target=min(targets,key=lambda t:math.dist((gun.x,gun.y),t.position(now) if not isinstance(t,Aircraft) else (t.x,t.y)),default=None)
-            if gun.attack_target is None:
+            minimum2=gun.min_engagement_range_nm**2;maximum2=gun_range**2
+            best=None;best_key=None
+            for row in nearby(not gun.enemy,gun.x-gun_range,gun.y-gun_range,gun.x+gun_range,gun.y+gun_range):
+                order,target,x,y,category=row
+                if not target.alive or category not in gun.preferred_targets:continue
+                distance2=(x-gun.x)**2+(y-gun.y)**2
+                if not minimum2<=distance2<=maximum2:continue
+                key=(distance2,order)
+                if best_key is None or key<best_key:best=row;best_key=key
+            gun.attack_target=best[1] if best is not None else None
+            if best is None:
                 gun.shot_timer=0.;continue
-            # SAAW: 7.5 rounds/sec; CIWS: 10, independent of tick size.
             interval=1/gun.stats['gun_rounds_per_second' if hasattr(gun,'gun_ammo') else 'rounds_per_second']
             gun.shot_timer+=dt
+            target=best[1];tx,ty=best[2:4]
+            vx,vy=velocity(target) if not isinstance(target,Bomb) else (math.sin(target.heading)*target.speed_at(now),math.cos(target.heading)*target.speed_at(now))
+            travel=math.hypot(tx-gun.x,ty-gun.y)/(bullet_speed/3600)
+            aim=math.atan2(tx+vx/3600*travel-gun.x,ty+vy/3600*travel-gun.y)
             while getattr(gun,ammo_attribute)>0 and gun.shot_timer>=interval-1e-9:
                 gun.shot_timer-=interval
                 setattr(gun,ammo_attribute,getattr(gun,ammo_attribute)-1)
-                t=gun.attack_target;tx,ty=t.position(now) if not isinstance(t,Aircraft) else (t.x,t.y)
-                vx,vy=velocity(t) if not isinstance(t,Bomb) else (math.sin(t.heading)*t.speed_at(now),math.cos(t.heading)*t.speed_at(now))
-                travel=math.hypot(tx-gun.x,ty-gun.y)/(STATS['guns']['bullet_speed_knots']/3600)
-                heading=math.atan2(tx+vx/3600*travel-gun.x,ty+vy/3600*travel-gun.y)+self.rng.uniform(-math.radians(STATS['guns']['dispersion_degrees']),math.radians(STATS['guns']['dispersion_degrees']))
+                heading=aim+self.rng.uniform(-dispersion,dispersion)
                 self.bullets.append(Bullet(gun,gun.x,gun.y,heading,now))
                 self.emit_sound('ciws_fire',(gun.x,gun.y))
                 if not gun.enemy:self.weapon_totals['bullets']+=1
-        remaining=[]
+        remaining=[];hit_radius=STATS['guns']['hit_radius_nm'];hit_radius2=hit_radius**2
         for bullet in self.bullets:
-            distance=min(STATS['guns']['bullet_speed_knots']/3600*dt,getattr(bullet.owner,'gun_range_nm',bullet.owner.range_nm)-bullet.travelled);old=(bullet.x,bullet.y)
+            owner=bullet.owner;gun_range=ranges.get(id(owner))
+            if gun_range is None:
+                gun_range=getattr(owner,'gun_range_nm',owner.range_nm);ranges[id(owner)]=gun_range
+            distance=min(bullet_speed/3600*dt,gun_range-bullet.travelled);old=(bullet.x,bullet.y)
             bullet.x+=math.sin(bullet.heading)*distance;bullet.y+=math.cos(bullet.heading)*distance;bullet.travelled+=distance
+            dx,dy=bullet.x-old[0],bullet.y-old[1];d2=max(dx*dx+dy*dy,1e-20)
+            local=nearby(not owner.enemy,min(old[0],bullet.x)-hit_radius,min(old[1],bullet.y)-hit_radius,
+                         max(old[0],bullet.x)+hit_radius,max(old[1],bullet.y)+hit_radius)
             hit=None
-            for t in candidates:
-                if not t.alive or (t.enemy if isinstance(t,Aircraft) else t.owner.enemy)==bullet.owner.enemy:continue
-                if isinstance(t,Aircraft) and not airborne(t):continue
-                tx,ty=t.position(now) if not isinstance(t,Aircraft) else (t.x,t.y)
-                dx,dy=bullet.x-old[0],bullet.y-old[1];d2=dx*dx+dy*dy
-                along=max(0,min(1,((tx-old[0])*dx+(ty-old[1])*dy)/max(d2,1e-20)))
-                if math.hypot(tx-old[0]-along*dx,ty-old[1]-along*dy)<=STATS['guns']['hit_radius_nm']:hit=t;break
+            # Keep the original collision priority when more than one unit is hit.
+            for order,target,tx,ty,category in sorted(local,key=lambda row:row[0]):
+                if not target.alive:continue
+                along=max(0,min(1,((tx-old[0])*dx+(ty-old[1])*dy)/d2))
+                if (tx-old[0]-along*dx)**2+(ty-old[1]-along*dy)**2<=hit_radius2:hit=target;break
             if hit is not None:
                 hit.health=max(0.,hit.health-self.rng.randint(STATS['guns']['damage_min'],STATS['guns']['damage_max']))
                 if not hit.alive:
                     pos=hit.position(now) if not isinstance(hit,Aircraft) else (hit.x,hit.y)
                     self.explosions.append((now,*pos,'#ffe9a0'))
                     if isinstance(hit,Aircraft):hit.destroy()
-                    self.record_kill(bullet.owner,hit,now)
-            elif bullet.travelled<getattr(bullet.owner,'gun_range_nm',bullet.owner.range_nm):remaining.append(bullet)
+                    self.record_kill(owner,hit,now)
+            elif bullet.travelled<gun_range:remaining.append(bullet)
         self.bullets=remaining
 
     def advance_flak(self,now,dt):
         aircraft=[*self.friendly_aircraft,*self.enemies,*self.icbms]
         guns=[u for u in [*self.ciws,*self.enemy_sams] if getattr(u,'shot_kind',None)=='flak']
         for gun in guns:
-            if not gun.alive or not gun.radar_emitting or gun.ammo<=0:gun.attack_target=None;gun.shot_timer=0.;continue
+            if not gun.alive or not gun.radar_emitting or gun.ammo<=0 or getattr(gun,'logistics_reload_remaining',0)>0:gun.attack_target=None;gun.shot_timer=0.;continue
             targets=[a for a in aircraft if airborne(a) and a.enemy!=gun.enemy and a.category in gun.preferred_targets
                      and gun.radar_detects(a.x,a.y)
                      and gun.min_engagement_range_nm<=math.hypot(a.x-gun.x,a.y-gun.y)<=gun.range_nm]
@@ -1034,7 +1079,7 @@ class CombatWorld:
                     else:unit.missile_inventory[key]=capacity
                 else:setattr(unit,key,capacity)
                 timers.pop(key,None)
-                self.events.append((now,f'{self.unit_name(unit)} reloaded',0,'status'))
+                self.events.append((now,f'{self.unit_name(unit)} reloaded',0,'enemy_reload'))
 
     def reload_status(self,unit,now):
         timers=getattr(unit,'reload_due',{})
@@ -1051,8 +1096,11 @@ class CombatWorld:
             self.events.append((now,f'{self.unit_name(silo)} launched {missile.name} at Airfield',0,'status'))
 
     def advance_icbms(self,now,dt):
-        for missile in self.icbms:
+        from game_player_silo import PlayerStrike, advance_strike
+        for missile in list(self.icbms):
             if not missile.alive:continue
+            if isinstance(missile,PlayerStrike):
+                advance_strike(self,missile,now,dt);continue
             target=missile.target
             if not target.alive:missile.destroy();continue
             stats=STATS['icbm'];old_speed=missile.speed
@@ -1098,7 +1146,7 @@ class CombatWorld:
                 if bomb.target.alive and math.hypot(x-bomb.target.x,y-bomb.target.y)<=STATS['bomb_behavior']['hit_radius_nm']:
                     damage=round(BOMB_DAMAGE[bomb.weight]*self.rng.uniform(1-STATS['bombs'][str(bomb.weight)]['damage_spread_fraction'],1+STATS['bombs'][str(bomb.weight)]['damage_spread_fraction']))
                     bomb.target.health=max(0,bomb.target.health-damage)
-                    self.record_kill(bomb.owner,bomb.target,now)
+                    self.record_kill(bomb.owner,bomb.target,now,f'{bomb.weight} lb Bomb')
                 bomb.health=0.
                 self.explosions.append((now,x,y,'#87caff'))
                 self.emit_sound(f'bomb_{bomb.weight}',(x,y))

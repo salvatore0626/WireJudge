@@ -111,8 +111,9 @@ class ProjectileInspector(AircraftInspector):
 def impact_seconds(missile):
     """Predict arrival using the same acceleration, speed cap and hit radius as flight."""
     if not missile.alive or not missile.target.alive:return None
-    stats=STATS['icbm']
-    distance=max(0.,math.dist((missile.x,missile.y),(missile.target.x,missile.target.y))-stats['hit_radius_nm'])*3600
+    stats=getattr(missile,'flight_stats',STATS['icbm'])
+    stop=STATS['player_warheads']['Cluster']['burst_distance_nm'] if getattr(missile,'warhead',None)=='Cluster' and not missile.cluster_child else stats['hit_radius_nm']
+    distance=max(0.,math.dist((missile.x,missile.y),(missile.target.x,missile.target.y))-stop)*3600
     if not distance:return 0.
     speed=min(stats['speed_knots'],max(0.,missile.speed))
     acceleration=stats['acceleration_knots_per_second']
@@ -208,15 +209,15 @@ class ICBMInspector(AircraftInspector):
         if hp:self.create_rectangle(6,6,6+258*hp,29,fill=health_color(hp),outline='')
         self.create_rectangle(91,9,179,26,fill=FACE,outline='')
         self.create_text(135,17,text=f'HP {max(0,m.health):g}/{m.max_health:g}',fill=TEXT,font=('Helvetica',10,'bold'))
-        status='Intercepted' if not m.alive else 'Target destroyed' if not m.target.alive else 'Inbound'
+        status='Intercepted' if not m.alive else 'Target destroyed' if not m.target.alive else 'Inbound' if m.enemy else 'Outbound'
         self.create_text(135,71,text=status,fill=MUTED,font=('Helvetica',9))
 
         seconds=impact_seconds(m)
         self.create_rectangle(8,86,262,157,fill='#07130e',outline='#405168',width=2)
-        self.create_text(135,101,text='TIME TO IMPACT',fill=MUTED,font=('Helvetica',9,'bold'))
+        self.create_text(135,101,text='TIME TO BURST' if getattr(m,'warhead',None)=='Cluster' and not m.cluster_child else 'TIME TO IMPACT',fill=MUTED,font=('Helvetica',9,'bold'))
         self.create_text(135,130,text=impact_clock(seconds),fill=RED if seconds is not None and seconds<=60 else GREEN,font=('Courier New',25,'bold'))
 
-        maximum=STATS['icbm']['speed_knots']
+        maximum=getattr(m,'flight_stats',STATS['icbm'])['speed_knots']
         scale=math.ceil(max(maximum,m.speed)*1.15/100)*100
         self.dial(135,239,65,m.speed/scale,'AIRSPEED','0',f'{scale:g}',YELLOW)
         for i in range(1,6):
@@ -227,23 +228,25 @@ class ICBMInspector(AircraftInspector):
         self.create_text(135,269,text=f'{m.speed:.0f}',fill=TEXT,font=('Helvetica',12,'bold'))
         self.create_text(135,293,text='KNOTS',fill=MUTED,font=('Helvetica',7))
 
-        self.create_rectangle(8,338,262,365,fill=FACE,outline='#416d58')
-        self.create_text(135,352,text='TARGET',fill=TEXT,font=('Helvetica',9,'bold'))
-        self.create_rectangle(8,365,262,515,fill='#071c16',outline='#416d58',width=2)
-        # Airfield silhouette, framed by a targeting reticle.
-        target=m.target;color='#69adff' if target.alive else '#586070'
-        self.create_rectangle(130,387,140,461,fill='#20384b',outline=color,width=2)
-        for y in range(391,456,12):self.create_line(135,y,135,y+6,fill=color)
-        self.create_line(130,422,105,422,105,449,fill=color,width=2)
-        for y in (398,423,448):self.create_rectangle(87,y-7,104,y+5,outline=color)
-        self.create_oval(97,389,173,465,outline=GREEN,width=1)
-        for x1,y1,x2,y2 in ((76,427,112,427),(158,427,194,427),(135,374,135,404),(135,450,135,480)):
-            self.create_line(x1,y1,x2,y2,fill=GREEN,width=1)
-        self.create_text(135,485,text=target.name,fill=TEXT,font=('Helvetica',10,'bold'))
-        distance=math.dist((m.x,m.y),(target.x,target.y))
-        self.create_text(135,503,text=f'{distance:,.1f} NM',fill=MUTED,font=('Helvetica',9))
+        player_strike=getattr(m,'warhead',None) is not None
+        if not player_strike:
+            self.create_rectangle(8,338,262,365,fill=FACE,outline='#416d58')
+            self.create_text(135,352,text='TARGET',fill=TEXT,font=('Helvetica',9,'bold'))
+            self.create_rectangle(8,365,262,515,fill='#071c16',outline='#416d58',width=2)
+            # Airfield silhouette, framed by a targeting reticle.
+            target=m.target;color='#69adff' if target.alive else '#586070'
+            self.create_rectangle(130,387,140,461,fill='#20384b',outline=color,width=2)
+            for y in range(391,456,12):self.create_line(135,y,135,y+6,fill=color)
+            self.create_line(130,422,105,422,105,449,fill=color,width=2)
+            for y in (398,423,448):self.create_rectangle(87,y-7,104,y+5,outline=color)
+            self.create_oval(97,389,173,465,outline=GREEN,width=1)
+            for x1,y1,x2,y2 in ((76,427,112,427),(158,427,194,427),(135,374,135,404),(135,450,135,480)):
+                self.create_line(x1,y1,x2,y2,fill=GREEN,width=1)
+            self.create_text(135,485,text=target.name,fill=TEXT,font=('Helvetica',10,'bold'))
+            distance=math.dist((m.x,m.y),(target.x,target.y))
+            self.create_text(135,503,text=f'{distance:,.1f} NM',fill=MUTED,font=('Helvetica',9))
 
         width=self.winfo_width();factor=width/270 if width>1 else 1.
         if factor!=1:self.scale('all',0,0,factor,factor)
-        height=round(524*factor)
+        height=round((312 if player_strike else 524)*factor)
         if height!=getattr(self,'render_height',None):self.render_height=height;self.configure(height=height)

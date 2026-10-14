@@ -69,8 +69,8 @@
       "bomb_bays": 0,
       "cms": 4,
       "price": 8000,
-      "visual_range_nm": 250,
-      "radar_range_nm": 250,
+      "visual_range_nm": 100,
+      "radar_range_nm": 200,
       "radar_angle_degrees": 360,
       "afterburner": false,
       "can_refuel": false
@@ -198,30 +198,30 @@
   },
   "ground_units": {
     "Airfield": {
-      "health": 1000,
-      "visual_range_nm": 30,
+      "health": 750,
+      "visual_range_nm": 25,
       "visual_range_per_upgrade_nm": 10,
       "runway_length_nm": 1.5,
-      "runway_width_feet": 400
+      "runway_width_feet": 600
     },
     "Radar": {
       "health": 15,
       "range_nm": 40,
       "power": 2,
-      "price": 100,
+      "price": 750,
       "min_engagement_range_nm": 0
     },
     "LR Radar": {
       "health": 25,
       "range_nm": 60,
       "power": 4,
-      "price": 100,
+      "price": 1500,
       "min_engagement_range_nm": 0
     },
     "EWR": {
       "health": 35,
       "power": 3,
-      "price": 100,
+      "price": 2500,
       "configuration_points": 5,
       "default_range_points": 3,
       "range_per_point_nm": 75,
@@ -234,8 +234,8 @@
       "range_nm": 32,
       "ammo": 4,
       "power": 1,
-      "price": 100,
-      "shot_interval_seconds": 0,
+      "price": 1500,
+      "shot_interval_seconds": 5,
       "max_inflight_missiles": 1,
       "reload_seconds": 300,
       "min_engagement_range_nm": 4
@@ -246,7 +246,7 @@
       "ammo": 4,
       "power": 2,
       "price": 100,
-      "shot_interval_seconds": 0,
+      "shot_interval_seconds": 5,
       "max_inflight_missiles": 1,
       "reload_seconds": 300,
       "min_engagement_range_nm": 6
@@ -257,7 +257,7 @@
       "visual_range_nm": 8,
       "ammo": 400,
       "power": 1,
-      "price": 100,
+      "price": 1250,
       "rounds_per_second": 10,
       "reload_seconds": 300,
       "min_engagement_range_nm": 0
@@ -267,7 +267,7 @@
       "range_nm": 15,
       "ammo": 50,
       "power": 1,
-      "price": 100,
+      "price": 750,
       "shells_per_second": 0.2,
       "reload_seconds": 300,
       "min_engagement_range_nm": 1.5,
@@ -278,13 +278,21 @@
       "range_nm": 75,
       "ammo": 3,
       "power": 4,
-      "price": 100,
+      "price": 5000,
       "shot_interval_seconds": 0,
       "max_inflight_missiles": 1,
       "reload_seconds": 300,
       "cone_width_degrees": 55,
       "rotation_degrees_per_second": 5,
       "min_engagement_range_nm": 10
+    },
+    "Missile Silo": {
+      "health": 150,
+      "price": 5000,
+      "power": 5,
+      "min_engagement_range_nm": 35,
+      "reload_seconds": 600,
+      "countdown_seconds": 10
     }
   },
   "missiles": {
@@ -491,27 +499,35 @@
       4,
       5
     ],
-    "heal_per_delivery": 50
+    "heal_per_delivery": 50,
+    "reload_speed_multipliers_by_level": [
+      1,
+      1.5,
+      2.5,
+      3.5,
+      5
+    ]
   },
   "economy": {
     "starting_money": 10000,
     "sell_refund_fraction": 0.25,
     "kill_rewards": {
-      "Factory": 1000,
-      "Bunker": 2000,
-      "Fighter": 400,
+      "Factory": 2500,
+      "Bunker": 4000,
+      "Fighter": 500,
       "Interceptor": 600,
       "Bomber": 700,
-      "Radar": 200,
-      "LR Radar": 300,
-      "SAM": 300,
-      "LR SAM": 500,
-      "SAAW": 150,
-      "Flak": 150,
-      "CIWS": 0,
+      "Radar": 400,
+      "LR Radar": 900,
+      "SAM": 600,
+      "LR SAM": 700,
+      "SAAW": 350,
+      "Flak": 250,
+      "CIWS": 425,
       "ICBM Silo": 2000,
       "ICBM": 500,
-      "Suicide Drone": 50
+      "Suicide Drone": 150,
+      "Airfield": 20000
     }
   },
   "upgrades": {
@@ -530,11 +546,11 @@
       10
     ],
     "factory_income_per_minute_by_level": [
-      20,
-      50,
-      120,
-      200,
-      350
+      10,
+      25,
+      100,
+      250,
+      500
     ],
     "prices": {
       "Power": [
@@ -544,7 +560,7 @@
         35000
       ],
       "Hangars": [
-        5000,
+        3000,
         12000,
         25000,
         50000
@@ -605,7 +621,8 @@
       ],
       "5": [
         "PAC-3",
-        "2000 lb bomb"
+        "2000 lb bomb",
+        "Missile Silo"
       ]
     }
   },
@@ -615,7 +632,7 @@
         "2× AIM-120C",
         "2× AIM-120C",
         "3× AIM-9",
-        "3× AIM-9"
+        "2× Sidearm"
       ],
       "bays": [
         "3× 250 lb Bomb"
@@ -680,12 +697,12 @@
     }
   },
   "icbm": {
-    "health": 250,
+    "health": 175,
     "launch_speed_knots": 300,
-    "speed_knots": 1500,
+    "speed_knots": 1750,
     "acceleration_knots_per_second": 200,
-    "damage": 250,
-    "damage_spread_fraction": 0.4,
+    "damage": 175,
+    "damage_spread_fraction": 0.5,
     "hit_radius_nm": 0.035
   },
   "enemy_ground_units": {
@@ -778,7 +795,7 @@
     "garrison_radius_nm": 6,
     "placement_attempts": 200,
     "runway_health": 300,
-    "first_wave_delay_seconds": 1500,
+    "first_wave_delay_seconds": 1000,
     "wave_interval_seconds": 600,
     "wave_interval_growth_fraction": 0.5,
     "infinite_growth_fraction": 0.35,
@@ -1266,7 +1283,7 @@
       }
     ],
     "random_seed": 0,
-    "random_factories_start_count": 15,
+    "random_factories_start_count": 12,
     "random_factories_growth_fraction": 0.25,
     "core_factory_min_radius_nm": 3,
     "runway_length_nm": 2,
@@ -1354,14 +1371,129 @@
         "cooldown_seconds": 0.06
       },
       "radar_ping": {
-        "file": "sound9",
+        "file": "game_radar_ping",
         "volume": 1,
         "cooldown_seconds": 0.06
+      },
+      "silo_conventional_impact": {
+        "file": "game_silo_conventional_impact",
+        "volume": 0.9,
+        "cooldown_seconds": 0.06
+      },
+      "silo_cluster_impact": {
+        "file": "game_silo_cluster_impact",
+        "volume": 0.65,
+        "cooldown_seconds": 0.04
+      },
+      "silo_nuclear_impact": {
+        "file": "game_silo_nuclear_impact",
+        "volume": 1,
+        "cooldown_seconds": 0.5
+      },
+      "objective_complete": {
+        "file": "game_objective_complete",
+        "volume": 0.8,
+        "cooldown_seconds": 0
+      },
+      "achievement_unlocked": {
+        "file": "game_achievement_unlocked",
+        "volume": 0.8,
+        "cooldown_seconds": 0
+      },
+      "kill_reward": {
+        "file": "game_kill_reward",
+        "volume": 0.8,
+        "cooldown_seconds": 0
       }
     },
     "center_falloff_enabled": true,
     "edge_volume": 0.25,
     "silence_distance_frames": 1.5,
-    "center_falloff_exponent": 1.5
-  }
+    "center_falloff_exponent": 1.5,
+    "kill_reward_scaling": {
+      "min_reward": 0,
+      "max_reward": 5000,
+      "min_volume_multiplier": 0.2,
+      "max_volume_multiplier": 1
+    }
+  },
+  "player_warheads": {
+    "Conventional": {
+      "price": 5000,
+      "blast_radius_nm": 1.75,
+      "center_damage": 500,
+      "edge_damage": 5
+    },
+    "Cluster": {
+      "price": 12000,
+      "coverage_radius_nm": 7,
+      "burst_distance_nm": 18,
+      "count": 8,
+      "max_per_target": 3,
+      "damage": 75,
+      "damage_spread_fraction": 0.4,
+      "submunition_health": 15,
+      "impact_radius_nm": 0.28
+    },
+    "Nuclear": {
+      "price": 50000,
+      "blast_radius_nm": 15,
+      "center_damage": 1000,
+      "edge_damage": 1
+    }
+  },
+  "player_strike_missile": {
+    "health": 200,
+    "launch_speed_knots": 400,
+    "speed_knots": 2500,
+    "acceleration_knots_per_second": 225,
+    "hit_radius_nm": 0.035
+  },
+  "objectives": [
+    {
+      "id": "build_flak",
+      "title": "Use the build menu to place a Flak Cannon within the build area. (20NM)",
+      "type": "build",
+      "target": "Flak",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 1000
+    },
+    {
+      "id": "buy_fighter",
+      "title": "Buy a fighter from the Hangar menu.",
+      "type": "build",
+      "target": "Fighter",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 2000
+    },
+    {
+      "id": "bomb_factories",
+      "title": "Destroy 3 Factories using bombs.",
+      "type": "kill",
+      "target": "Factory",
+      "amount": 3,
+      "weapon": "Bombs",
+      "reward": 3000
+    },
+    {
+      "id": "enemy_airfield",
+      "title": "Locate the enemy airfield. Its somewhere within 100 NM of your Airfield.",
+      "type": "locate",
+      "target": "Airfield",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 4000
+    },
+    {
+      "id": "objective_5",
+      "title": "Destroy the enemy Airfield by bombing its runway.",
+      "type": "kill",
+      "target": "Airfield",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 5000
+    }
+  ]
 }

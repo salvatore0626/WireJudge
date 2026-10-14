@@ -11,13 +11,13 @@ import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from game_config import SCHEMA, STATS_PATH, load_stats
+from game_config import SCHEMA, STATS_PATH, load_stats, OBJECTIVE_DEFAULTS
 from game_campaign_comparison import CampaignComparison
 
 
 def label(key):
     special = {'cms': 'Countermeasures', 'icbm': 'ICBM', 'ground_units': 'Friendly ground units',
-               'tiers': 'Campaign bands', 'default_loadouts': 'Friendly default loadouts'}
+               'Power': 'Generator', 'objectives':'Objectives', 'tiers': 'Campaign bands', 'default_loadouts': 'Friendly default loadouts'}
     return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize())
 
 
@@ -249,7 +249,7 @@ class ConfigEditor(tk.Tk):
         self.tree_paths={}
         query=self.search.get().strip().lower()
         def add(value,path,parent):
-            text=f'Band {path[-1]+1}' if isinstance(path[-1],int) else label(path[-1])
+            text=(f'Objective {path[-1]+1} · {value.get("title","")}' if path[0]=='objectives' else f'Band {path[-1]+1}') if isinstance(path[-1],int) else label(path[-1])
             matches=not query or any(query in (' '.join(map(str,p))+' '+label(p[-1])).lower() for p,_ in leaves(value,path))
             if not matches:return
             iid=self.tree.insert(parent,'end',text=text,open=bool(query) or len(path)==1)
@@ -284,18 +284,23 @@ class ConfigEditor(tk.Tk):
         if path is None:
             self.heading.configure(text='No matching settings')
             return
-        self.heading.configure(text=' / '.join(f'Band {p+1}' if isinstance(p,int) else label(p) for p in path))
+        self.heading.configure(text=' / '.join((f'Objective {p+1}' if path[0]=='objectives' else f'Band {p+1}') if isinstance(p,int) else label(p) for p in path))
         ttk.Button(self.actions,text='Reset this group',command=self.reset_group).pack(side='left')
         if path[0]=='campaign':ttk.Button(self.actions,text='Compare Bands',command=self.compare_campaign).pack(side='left',padx=6)
         if path[:2]==('campaign','tiers'):
             ttk.Button(self.actions,text='Duplicate band' if len(path)>2 else 'Add band',command=self.add_band).pack(side='left',padx=6)
             if len(path)>2:ttk.Button(self.actions,text='Remove band',command=self.remove_band).pack(side='left')
+        if path[0]=='objectives':
+            ttk.Button(self.actions,text='Add objective',command=lambda:self.edit_objective('add')).pack(side='left',padx=4)
+            if len(path)>1:
+                for title,action in (('Duplicate','duplicate'),('Remove','remove'),('Up','up'),('Down','down')):
+                    ttk.Button(self.actions,text=title,command=lambda action=action:self.edit_objective(action)).pack(side='left',padx=2)
         query=self.search.get().lower().strip()
         def build(value,p,depth=0):
             if isinstance(value,(dict,list)):
                 if p!=path:
-                    ttk.Label(self.form,text=label(p[-1]) if not isinstance(p[-1],int) else f'Band {p[-1]+1}',font=('Segoe UI',11,'bold')).pack(anchor='w',pady=(14,5))
-                if isinstance(value,list) and rule_at(p).get('$length') is None and p!=('campaign','tiers'):
+                    ttk.Label(self.form,text=label(p[-1]) if not isinstance(p[-1],int) else f'Objective {p[-1]+1}' if p[0]=='objectives' else f'Band {p[-1]+1}',font=('Segoe UI',11,'bold')).pack(anchor='w',pady=(14,5))
+                if isinstance(value,list) and rule_at(p).get('$length') is None and p not in (('campaign','tiers'),('objectives',)):
                     controls=ttk.Frame(self.form);controls.pack(anchor='w',pady=4)
                     ttk.Button(controls,text='+ Add entry',command=lambda:self.resize_list(p,1)).pack(side='left')
                     if value:ttk.Button(controls,text='− Remove last',command=lambda:self.resize_list(p,-1)).pack(side='left',padx=4)
@@ -312,6 +317,11 @@ class ConfigEditor(tk.Tk):
             ttk.Label(row,text=text,wraplength=300).pack(side='left',fill='x',expand=True)
             var=self.variable(p,value);rule=rule_at(p)
             if rule=='boolean':ttk.Checkbutton(row,text='Enabled',variable=var).pack(side='right')
+            elif rule=='text' and p[0]=='objectives' and p[-1] in ('type','target','weapon'):
+                options=('build','kill','upgrade','locate') if p[-1]=='type' else (
+                    ['Any','Bombs','AIM-120','AIM-9','AGM-88','Sidearm','CIWS','Flak','Conventional','Cluster','Nuclear',*[f'{w} lb Bomb' for w in self.document.data['bombs']]] if p[-1]=='weapon' else
+                    sorted(set(self.document.data['friendly_aircraft'])|set(self.document.data['enemy_aircraft'])|set(self.document.data['ground_units'])|set(self.document.data['enemy_ground_units'])|{'Airfield','ICBM','Generator','Factory','Hangars','Ground Crew','Logistics'}))
+                ttk.Combobox(row,textvariable=var,values=options,width=23,state='readonly').pack(side='right')
             elif rule=='text' and p[:2]==('upgrades','airfield_unlocks'):
                 options=sorted({x for group in self.document.original['upgrades']['airfield_unlocks'].values() for x in group})
                 ttk.Combobox(row,textvariable=var,values=options,width=23,state='readonly').pack(side='right')
@@ -327,6 +337,25 @@ class ConfigEditor(tk.Tk):
             hint={'fraction':'0–1 fraction','integer':'whole number','positive':'greater than 0','number':'0 or greater','text':'text'}.get(rule,'')
             if hint:ttk.Label(row,text=hint,style='Muted.TLabel',width=17).pack(side='right',padx=10)
         build(get_at(self.document.data,path),path)
+
+    def edit_objective(self,action):
+        index=self.selection[1] if len(self.selection)>1 else 0
+        def change(data):
+            values=data['objectives']
+            if action in ('add','duplicate'):
+                objective=deepcopy(values[index]) if action=='duplicate' and values else deepcopy(OBJECTIVE_DEFAULTS[0])
+                ids={o['id'] for o in values};number=1
+                while f'objective_{number}' in ids:number+=1
+                objective['id']=f'objective_{number}'
+                if action=='add':objective['title']='New objective'
+                position=index+1 if action=='duplicate' and values else len(values)
+                values.insert(position,objective);self.selection=('objectives',position)
+            elif action=='remove' and values:
+                values.pop(index);self.selection=('objectives',min(index,len(values)-1)) if values else ('objectives',)
+            elif action in ('up','down') and values:
+                other=index+(-1 if action=='up' else 1)
+                if 0<=other<len(values):values[index],values[other]=values[other],values[index];self.selection=('objectives',other)
+        self.change_structure(change)
 
     def compare_campaign(self):
         if self.document is None:return
