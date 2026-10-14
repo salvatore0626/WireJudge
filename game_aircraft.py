@@ -58,6 +58,8 @@ class Aircraft:
     service_refuel_rate: float = STATS['ground_crew']['refuel_units_per_second_level1']
     crew_active: bool = False
     depart_after_service: bool = False
+    redeploy_after_service: bool = False
+    rtb_resume: object = field(default=None,repr=False,compare=False)
     fuel: float = -1.
     cms: int = -1
     armed_hardpoints: list = field(default_factory=list)
@@ -305,7 +307,30 @@ class Aircraft:
         self.service_remaining=self.service_total;self.crew_active=False
         self.depart_after_service=False
         self.state='servicing' if self.service_total>1e-9 else 'parked'
-        if self.state=='parked':self.refill()
+        if self.state=='parked':self.finish_service()
+
+    def finish_service(self):
+        self.health=self.max_health;self.refill();self.state='parked'
+        self.service_remaining=0.;self.crew_active=False
+        if self.redeploy_after_service and self.alive and not self.enemy:
+            self.redeploy_after_service=False
+            self.attack_target=None;self.attack_point=None;self.auto_attack_target=None
+            self.engage_target=None;self.combat_heading=None;self.combat_home=False
+            self.bomb_run_target=None;self.bomb_run_heading=None
+            saved=self.rtb_resume;self.rtb_resume=None
+            if saved is None:
+                self.set_speed('Mil')
+                self.loiter((0.,0.),radius=STATS['aircraft_behavior']['default_orbit_radius_nm'])
+            else:
+                order,speed=saved
+                self.mode,self.orbit_center,self.orbit_radius,self.clockwise,path,self.waypoint,leader,self.fenced_in=order
+                self.path=list(path);self.set_speed(speed)
+                if self.mode=='formation' and leader is not None and leader.alive and leader.mode!='rtb':
+                    self.form_up(leader)
+                else:
+                    if self.mode=='formation':self.mode='loiter'
+                    self.depart()
+                self.fenced_in=order[-1]
 
     def retime_service(self,level):
         remaining_fraction=self.service_work_remaining/self.service_work_total if self.service_work_total else 0.
@@ -343,7 +368,13 @@ class Aircraft:
         self.cms-=1
         return (rng or random).random()<STATS['countermeasures']['success_probability']
 
-    def rtb(self):
+    def rtb(self,redeploy=False):
+        if redeploy and self.mode!='rtb':
+            order=self.fuel_resume if self.fuel_rendezvous and self.fuel_resume is not None else (
+                self.mode,tuple(self.orbit_center),self.orbit_radius,self.clockwise,list(self.path),self.waypoint,self.leader,self.fenced_in)
+            self.rtb_resume=(order,self.speed_setting)
+        elif not redeploy:self.rtb_resume=None
+        self.redeploy_after_service=bool(redeploy)
         self.pending_auto=None
         for follower in list(self.followers):follower.loiter((0.,0.))
         self.fuel_rendezvous=False;self.fuel_resume=None
@@ -357,12 +388,13 @@ class Aircraft:
 
     def cancel_departure(self):
         if self.state!='queued':return False
-        self.state='parked';self.depart_after_service=False
+        self.state='parked';self.depart_after_service=False;self.redeploy_after_service=False
         self.pending_auto=None;self.detach();return True
 
     def cancel_rtb(self):
         if self.mode!='rtb' or self.state not in ('airborne','rtb','approach'):return False
         self.pending_auto=None;self.fuel_rendezvous=False;self.fuel_resume=None
+        self.redeploy_after_service=False;self.rtb_resume=None
         self.attack_target=None;self.attack_point=None;self.engage_target=None
         self.auto_attack_target=None;self.combat_heading=None;self.combat_home=False
         self.bomb_run_target=None;self.bomb_run_heading=None;self.rtb_stage=0
@@ -421,7 +453,8 @@ class Aircraft:
             self.fenced_in=True
         self.depart_after_service=True
         if self.state=='parked':self.state='queued'
-        elif self.state in ('rtb','approach'):self.state='airborne'
+        elif self.state in ('rtb','approach'):
+            self.state='airborne';self.redeploy_after_service=False;self.rtb_resume=None
 
 
 REFUEL_RADIUS_NM = STATS['tanker']['refuel_radius_nm']
@@ -511,7 +544,7 @@ class AirOperations:
                 if self.time-a.last_sample>=.2-1e-9:
                     if a.speed>=1:a.history.append((self.time,a.x,a.y,a.speed))
                     a.last_sample=self.time
-                while a.history and a.history[0][0]<self.time-30.2:a.history.popleft()
+                while a.history and a.history[0][0]<self.time-60.2:a.history.popleft()
             self.service_aircraft(aircraft,dt)
             self.refuel_aircraft(aircraft,dt)
             if self.combat is not None:
@@ -535,8 +568,7 @@ class AirOperations:
             a.service_work_remaining=max(0.,a.service_work_remaining-dt)
             a.service_remaining=max(a.service_work_remaining,max(0.,a.spec['fuel']-a.fuel)/a.service_refuel_rate)
             if a.service_remaining<=1e-9:
-                a.health=a.max_health;a.refill();a.state='parked'
-                a.service_remaining=0.;a.crew_active=False
+                a.finish_service()
 
     def refuel_aircraft(self,aircraft,dt):
         tankers=[a for a in aircraft if a.kind=='KC-49' and a.alive and a.state=='airborne' and a.mode!='rtb']
@@ -653,6 +685,30 @@ class AirOperations:
     def toward(self,a,point,dt,combat=False):
         self.steer(a,point[0]-a.x,point[1]-a.y,dt,combat=combat)
 
+    def patrol_guidance(self,a,dt):
+        # Fly past waypoints with room to bank into the next leg.
+        # Acceptance grows with speed/turn radius and stays bounded by leg length.
+        count=len(a.path);a.waypoint%=count
+        for _ in range(count):
+            previous=a.path[(a.waypoint-1)%count];point=a.path[a.waypoint]
+            following=a.path[(a.waypoint+1)%count]
+            ix,iy=point[0]-previous[0],point[1]-previous[1]
+            ox,oy=following[0]-point[0],following[1]-point[1]
+            incoming=max(.001,math.hypot(ix,iy));outgoing=max(.001,math.hypot(ox,oy))
+            angle=abs(angle_error(math.atan2(ox,oy),math.atan2(ix,iy)))
+            rate=min(math.radians(STATS['aircraft_behavior']['normal_turn_limit_degrees_per_second']),
+                     9.81*math.tan(math.radians(STATS['aircraft_behavior']['normal_bank_degrees']))/max(35,a.speed*.514444))
+            if a.speed>=a.spec['speed_knots']*STATS['speed_modes']['Mil']['speed_multiplier']:
+                rate*=STATS['aircraft_behavior']['fast_turn_multiplier']
+            radius=a.speed/3600/max(.001,rate)
+            lead=radius*math.tan(min(angle,math.radians(135))/2)+a.speed/3600*4
+            acceptance=max(.05,min(min(incoming,outgoing)*.45,max(.35,lead)))
+            dx,dy=a.x-point[0],a.y-point[1]
+            passed=(dx*ix+dy*iy)/incoming>=0 and abs(dx*iy-dy*ix)/incoming<=acceptance*2
+            if math.hypot(dx,dy)>acceptance and not passed:break
+            a.waypoint=(a.waypoint+1)%count
+        self.toward(a,a.path[a.waypoint],dt)
+
     def defensive_guidance(self,a):
         threats=[] if a.kind=='Suicide Drone' or self.combat is None or a.state not in ('airborne','rtb','approach') else [
             m for m in self.combat.missiles if m.alive and m.target is a
@@ -763,11 +819,7 @@ class AirOperations:
                     a.mode='loiter';a.orbit_radius=a.full_speed_orbit_radius
                 self.toward(a,point,dt)
             elif a.mode=='patrol' and a.path:
-                point=a.path[a.waypoint]
-                if math.dist((a.x,a.y),point)<max(.2,a.speed/3600*6):
-                    a.waypoint=(a.waypoint+1)%len(a.path);point=a.path[a.waypoint]
-                target_speed=min(target_speed,max(120.,math.dist((a.x,a.y),point)*100))
-                self.toward(a,point,dt)
+                self.patrol_guidance(a,dt)
             else:
                 target_speed=min(target_speed,.95*math.sqrt(9.81*a.orbit_radius*1852)/.514444)
                 cx,cy=a.orbit_center;dx=a.x-cx;dy=a.y-cy
@@ -789,7 +841,8 @@ class AirOperations:
             target_speed=min(target_speed,max(a.cruise_speed*.5,a.cruise_speed*(1-.5*a.combat_turn_intensity)))
             deceleration=max(deceleration,20.)
         if getattr(a,'command_turn_intensity',0.)>0:
-            fraction=1-(1-STATS['aircraft_behavior']['command_turn_speed_fraction'])*a.command_turn_intensity
+            minimum=max(.8,STATS['aircraft_behavior']['command_turn_speed_fraction']) if a.mode=='patrol' else STATS['aircraft_behavior']['command_turn_speed_fraction']
+            fraction=1-(1-minimum)*a.command_turn_intensity
             target_speed=min(target_speed,a.cruise_speed*fraction)
             deceleration=max(deceleration,STATS['aircraft_behavior']['command_turn_deceleration_knots_per_second'])
         if defensive and a.defensive_speed is not None:target_speed=a.defensive_speed

@@ -166,7 +166,7 @@ def advance_strike(world,missile,now,dt):
             missile.x,missile.y=target.x,target.y;blast(world,missile,now)
     if missile.alive:
         if not missile.history or now-missile.history[-1][0]>=.2:missile.history.append((now,missile.x,missile.y,missile.speed))
-        while missile.history and now-missile.history[0][0]>30:missile.history.popleft()
+        while missile.history and now-missile.history[0][0]>60:missile.history.popleft()
 
 
 def silo_fuel_display(silo,elapsed):

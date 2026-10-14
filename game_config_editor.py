@@ -310,6 +310,16 @@ class ConfigEditor(tk.Tk):
             if query and query not in (' '.join(map(str,p))+' '+label(p[-1])).lower():return
             row=ttk.Frame(self.form);row.pack(fill='x',pady=5)
             key=p[-1]
+            if key in ('description','runway_description'):
+                ttk.Label(row,text=label(key)).pack(anchor='w')
+                var=self.variable(p,value)
+                editor=tk.Text(row,height=4,width=40,wrap='word',background='#22334b',foreground='white',insertbackground='white',undo=True)
+                editor.insert('1.0',var.get());editor.edit_modified(False);editor.pack(fill='x',expand=True,pady=(4,0))
+                def changed(event,editor=editor,var=var):
+                    if editor.edit_modified():
+                        var.set(editor.get('1.0','end-1c'));editor.edit_modified(False)
+                editor.bind('<<Modified>>',changed)
+                return
             if isinstance(key,int):
                 container=rule_at(p[:-1]);length=container.get('$length')
                 text=('Minimum' if key==0 else 'Maximum') if length==2 else f'Level {key+2 if "prices" in p else key+1}' if length in (4,5) else f'Slot {key+1}' if p[-2] in ('hardpoints','bays') else f'Entry {key+1}'

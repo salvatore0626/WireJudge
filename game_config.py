@@ -470,6 +470,7 @@ PLAYER_WARHEAD_DEFAULTS={
 
 def migrate_stats(data):
     """Accept older balance files without discarding customized values."""
+    data.setdefault('campaign',{}).setdefault('runway_description','')
     data.setdefault('objectives',deepcopy(OBJECTIVE_DEFAULTS))
     for objective in data['objectives']:
         if objective.get('weapon')=='HARM':objective['weapon']='AGM-88'
@@ -522,6 +523,8 @@ def migrate_stats(data):
     saaw=data.get('enemy_ground_units',{}).get('SAAW')
     if saaw is not None:saaw.setdefault('radar_range_nm',saaw.get('range_nm',8))
     if rebalance:apply_balance_update(data)
+    for group in ('ground_units','enemy_ground_units'):
+        for unit in data.get(group,{}).values():unit.setdefault('description','')
     return data
 
 
@@ -714,3 +717,8 @@ AUDIO_DEFAULTS['kill_reward_scaling']={'min_reward':0,'max_reward':10000,'min_vo
 for _event in ('achievement_unlocked','kill_reward'):
     SCHEMA['audio']['events'][_event]={'file':'text','volume':'fraction','cooldown_seconds':'number'}
 SCHEMA['audio']['kill_reward_scaling']={key:'number' for key in AUDIO_DEFAULTS['kill_reward_scaling']}
+
+# Building descriptions are editable independently for friendly/enemy types.
+for _group in ('ground_units','enemy_ground_units'):
+    for _rule in SCHEMA[_group].values():_rule['description']='text'
+SCHEMA['campaign']['runway_description']='text'

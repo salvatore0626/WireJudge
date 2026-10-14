@@ -33,20 +33,31 @@ HIDDEN_ACHIEVEMENTS={'force','embarrassing'}
 PROGRESS_BLUE='#438cff'
 
 
-def achievement_path():
-    root=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(STATS_PATH).parent
-    return root/'game_achievements.json'
+def achievement_path(settings_path=None):
+    settings=Path(settings_path) if settings_path is not None else Path.home()/'.wire_judge'/'settings.json'
+    return settings.parent/'game_achievements.json'
 
 
 class AchievementStore:
-    def __init__(self,path=None):
-        self.path=Path(path or achievement_path());self.unlocked=set();self.load_error=None
-        if self.path.exists():
+    def __init__(self,path=None,settings_path=None):
+        self.path=Path(path) if path is not None else achievement_path(settings_path)
+        self.unlocked=set();self.load_error=None
+        source=self.path
+        if path is None and not source.exists():
+            # Import the previous install-local records once; the user copy wins
+            # thereafter, including an intentionally empty Reset Achievements file.
+            legacy_root=Path(sys.executable).parent if getattr(sys,'frozen',False) else Path(STATS_PATH).parent
+            legacy=legacy_root/'game_achievements.json'
+            if legacy!=self.path and legacy.is_file():source=legacy
+        if source.exists():
             try:
-                data=json.loads(self.path.read_text(encoding='utf-8'));values=data['unlocked']
+                data=json.loads(source.read_text(encoding='utf-8'));values=data['unlocked']
                 if not isinstance(values,list) or any(not isinstance(v,str) for v in values):raise ValueError('Invalid achievement records')
                 self.unlocked=set(values)
             except (OSError,ValueError,KeyError,TypeError) as exc:self.load_error=f'Cannot read achievements: {exc}'
+            if source!=self.path and self.load_error is None:
+                try:self.save()
+                except (OSError,ValueError) as exc:self.load_error=f'Cannot migrate achievements: {exc}'
     def save(self):
         if self.load_error:raise ValueError(self.load_error+'; use Reset Achievements to start fresh.')
         self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -139,7 +150,7 @@ class RunProgress:
 class ProgressUI:
     def init_progress(self):
         self.debug_enabled=False;self.debug_shortcut_down=False
-        self.progress=RunProgress(STATS['objectives'],AchievementStore())
+        self.progress=RunProgress(STATS['objectives'],AchievementStore(settings_path=getattr(self.app,'settings_path',None)))
         self.progress_scroll_panel,self.progress_panel,self.progress_scroll_canvas=self.create_scroll_menu()
         style=ttk.Style(self)
         style.configure('ProgressNotice.TFrame',bordercolor=PROGRESS_BLUE,lightcolor=PROGRESS_BLUE,darkcolor=PROGRESS_BLUE,borderwidth=2,relief='solid')
