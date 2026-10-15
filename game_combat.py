@@ -302,8 +302,7 @@ class CombatWorld:
         self.campaign=None
         self.contact_numbers={prefix:0 for prefix in AIRCRAFT_LABEL_PREFIXES.values()}
         self.airfield_health_snapshots={}
-        self._target_limit_cache=None
-        self._committed_cache=None
+        self._budget_cache_enabled=False;self._budget_snapshot=None
         self._incoming_attackers={}
         self.sound_callback=None
         self.weapon_totals={k:0 for k in ('bullets','missiles','flak shells','bombs')}
@@ -495,7 +494,7 @@ class CombatWorld:
             launch_speed=STATS['missiles'][missile_kind].get('launch_speed_knots',0.)
             missile=Missile(sam,target,missile_kind,now,sam.x,sam.y,heading,launch_speed,launch_speed,self.rng.uniform(STATS['countermeasures']['lead_seconds_min'],STATS['countermeasures']['lead_seconds_max']),max_range=MISSILE_RANGE[missile_kind])
             sam.ammo-=1;sam.last_missile_shot=now
-            self.missiles.append(missile);busy.add((sam.enemy,id(target)))
+            self.missiles.append(missile);self.invalidate_commitments();busy.add((sam.enemy,id(target)))
             if not sam.enemy:self.weapon_totals['missiles']+=1
 
     def radar_site_support(self,target,team=False):
@@ -515,82 +514,100 @@ class CombatWorld:
         a.attack_target=None;a.attack_point=None;a.engage_target=None
         a.auto_attack_target=None;a.combat_heading=None
         a.bomb_run_target=None;a.bomb_run_heading=None;a.bomb_run_phase='attack'
-        self.attack_salvos[:]=[plan for plan in self.attack_salvos if plan['owner'] is not a]
+        a.manual_attack_pending=False
+        self.cancel_owner_salvos(a)
 
-    def weapon_choice(self,a,target):
+    def weapon_choice(self,a,target,inventory=None):
         if isinstance(target,Aircraft) and not airborne(target):return None
+        inventory=a.missile_inventory if inventory is None else inventory
         distance=math.hypot(target.x-a.x,target.y-a.y)
         error=abs(angle_error(math.atan2(target.x-a.x,target.y-a.y),a.heading))
-        if distance<=MISSILE_LAUNCH_RANGE['AIM-9'] and a.weapon_enabled('AIM-9') and a.missile_inventory.get('AIM-9',0) and error<=math.radians((a.radar_angle_deg/2 or 30)*1.2)+1e-12:return 'AIM-9'
-        if distance<=MISSILE_LAUNCH_RANGE['AIM-120'] and a.weapon_enabled('AIM-120') and a.missile_inventory.get('AIM-120',0) and self.has_datalink(target,a.enemy) and a.radar_detects(target.x,target.y):return 'AIM-120'
+        if distance<=MISSILE_LAUNCH_RANGE['AIM-9'] and a.weapon_enabled('AIM-9') and inventory.get('AIM-9',0) and error<=math.radians((a.radar_angle_deg/2 or 30)*1.2)+1e-12:return 'AIM-9'
+        if distance<=MISSILE_LAUNCH_RANGE['AIM-120'] and a.weapon_enabled('AIM-120') and inventory.get('AIM-120',0) and self.has_datalink(target,a.enemy) and a.radar_detects(target.x,target.y):return 'AIM-120'
         return None
 
     def prefers_anti_radar(self,a,target):
         return target.category=='Radars' and any(a.weapon_enabled(kind) and a.missile_inventory.get(kind,0)>0 for kind in ANTI_RADAR_WEAPONS)
 
-    def anti_radar_weapon(self,a,target):
+    def anti_radar_weapon(self,a,target,inventory=None):
+        inventory=a.missile_inventory if inventory is None else inventory
         distance=math.hypot(target.x-a.x,target.y-a.y)
         identified=id(target) in self.identified_ground
         standard=not getattr(target,'long_range',False) and not getattr(target,'early_warning',False)
-        sidearm=(identified or getattr(target,'missile_kind',None)=='SM1') and a.weapon_enabled('Sidearm') and a.missile_inventory.get('Sidearm',0)>0 and distance<=MISSILE_LAUNCH_RANGE['Sidearm']
-        harm=a.weapon_enabled('AGM-88') and a.missile_inventory.get('AGM-88',0)>0 and distance<=AGM88_LAUNCH_RANGE
+        sidearm=(identified or getattr(target,'missile_kind',None)=='SM1') and a.weapon_enabled('Sidearm') and inventory.get('Sidearm',0)>0 and distance<=MISSILE_LAUNCH_RANGE['Sidearm']
+        harm=a.weapon_enabled('AGM-88') and inventory.get('AGM-88',0)>0 and distance<=AGM88_LAUNCH_RANGE
         if standard and sidearm:return 'Sidearm'
         if harm:return 'AGM-88'
         if sidearm:return 'Sidearm'
         return None
 
-    def committed_shots(self,target,team):
-        if self._committed_cache is not None:return self._committed_cache.get((id(target),team),0)
-        active=sum(weapon.target is target and weapon.owner.enemy==team and weapon.target.alive for weapon in (*self.missiles,*self.bombs))
-        reserved=sum(plan['remaining'] for plan in self.attack_salvos if plan['target'] is target and plan['owner'].enemy==team)
-        return active+reserved
+    def invalidate_commitments(self):
+        self._budget_snapshot=None
 
-    def target_limit(self,target,team):
-        if isinstance(target,ICBM):return 3
-        if self.is_airfield(target):return math.inf
-        cache=self._target_limit_cache
-        if cache is None:return self.compute_target_limit(target,team)
-        key=(id(target),team)
-        if key not in cache:cache[key]=self.compute_target_limit(target,team)
-        return cache[key]
+    @staticmethod
+    def weapon_base_damage(weapon):
+        return BOMB_DAMAGE[weapon] if isinstance(weapon,int) else MISSILE_DAMAGE[weapon][0]
 
-    def compute_target_limit(self,target,team):
-        air=isinstance(target,Aircraft);limits=[1]
-        active_owners=None
-        for a in self.current_aircraft:
-            limit=a.air_weapons_per_target if air else a.ground_weapons_per_target
-            if limit<=max(limits):continue
-            if a.enemy!=team or not a.alive or a.state!='airborne' or a.mode=='rtb' or not a.fenced_in:continue
-            if a.attack_target is not None and a.attack_target is not target:continue
-            if active_owners is None:active_owners={id(weapon.owner) for weapon in (*self.missiles,*self.bombs) if weapon.target is target and weapon.owner.enemy==team and isinstance(weapon.owner,Aircraft)}
-            if id(a) not in active_owners:
-                if air:
-                    if target is not a.attack_target and math.hypot(target.x-a.x,target.y-a.y)>a.engagement_range:continue
-                    if not (target is a.attack_target or target.category in a.target_types) or self.weapon_choice(a,target) is None:continue
-                else:
-                    anti=(target is a.attack_target or 'Radars' in a.target_types) and getattr(target,'radar_emitting',False) and self.anti_radar_weapon(a,target) is not None
-                    known=(a.visual_detects(target.x,target.y) if a.enemy else target.id in self.known if isinstance(target,Factory) else id(target) in self.known_ground)
-                    bomb=a.usable_bombs and not self.prefers_anti_radar(a,target) and known and (target is a.attack_target or target.category in a.target_types) and math.hypot(target.x-a.x,target.y-a.y)<=a.engagement_range
-                    if not anti and not bomb:continue
-            limits.append(a.air_weapons_per_target if air else a.ground_weapons_per_target)
-        return max(limits)
+    def commitment_totals(self):
+        if self._budget_cache_enabled and self._budget_snapshot is not None:return self._budget_snapshot
+        damage={};personal={};active_personal={};counts={}
+        for weapon in (*self.missiles,*self.bombs):
+            if not weapon.alive or not weapon.target.alive:continue
+            key=(id(weapon.target),weapon.owner.enemy)
+            counts[key]=counts.get(key,0)+1
+            if isinstance(weapon.owner,Aircraft):
+                own=(id(weapon.owner),id(weapon.target))
+                personal[own]=personal.get(own,0)+1;active_personal[own]=active_personal.get(own,0)+1
+            if isinstance(weapon,Missile) and (weapon.terminal or weapon.decoy is not None or weapon.radar_memory_point is not None):continue
+            value=BOMB_DAMAGE[weapon.weight] if isinstance(weapon,Bomb) else MISSILE_DAMAGE[weapon.kind][0]
+            damage[key]=damage.get(key,0)+value
+        for plan in self.attack_salvos:
+            kinds=plan.get('weapons',[])
+            if not kinds or not plan['target'].alive or not plan['owner'].alive:continue
+            key=(id(plan['target']),plan['owner'].enemy);own=(id(plan['owner']),id(plan['target']))
+            counts[key]=counts.get(key,0)+len(kinds);personal[own]=personal.get(own,0)+len(kinds)
+            damage[key]=damage.get(key,0)+sum(self.weapon_base_damage(kind) for kind in kinds)
+        result=(damage,personal,active_personal,counts)
+        if self._budget_cache_enabled:self._budget_snapshot=result
+        return result
+
+    def committed_shots(self,target,team):return self.commitment_totals()[3].get((id(target),team),0)
+
+    def committed_damage(self,target,team):return self.commitment_totals()[0].get((id(target),team),0.)
+
+    def damage_needed(self,target,team):return max(0.,target.health-self.committed_damage(target,team))
+
+    def personal_committed(self,a,target):return self.commitment_totals()[1].get((id(a),id(target)),0)
+
+    @staticmethod
+    def personal_target_limit(a,target):
+        return a.air_weapons_per_target if isinstance(target,Aircraft) else a.ground_weapons_per_target
 
     @staticmethod
     def is_airfield(target):
         return hasattr(target,'runway_corners') or (hasattr(target,'band_number') and hasattr(target,'wave_counts'))
 
-    def deconfliction_limit(self,target,owner):
-        if isinstance(target,ICBM):return 3
-        if self.is_airfield(target) or getattr(owner,'attack_target',None) is target:return math.inf
-        return self.target_limit(target,owner.enemy)
-
     def target_has_room(self,target,a):
-        return self.committed_shots(target,a.enemy)<self.deconfliction_limit(target,a)
+        if a.kind=='Suicide Drone':return True
+        return (self.personal_committed(a,target)<self.personal_target_limit(a,target)
+                and self.damage_needed(target,a.enemy)>1e-9)
 
-    def target_shot_key(self,a,target):
-        # Independent aircraft may fire together on explicit orders, runways or ICBMs.
-        independent=isinstance(target,ICBM) or self.is_airfield(target) or a.attack_target is target
-        return ('owner',id(a),id(target)) if independent else (a.enemy,id(target))
+    def target_shot_key(self,a,target):return ('owner',id(a),id(target))
+
+    def cancel_owner_salvos(self,a):
+        self.attack_salvos[:]=[plan for plan in self.attack_salvos if plan['owner'] is not a]
+        self.invalidate_commitments()
+
+    def bomb_weapon_choice(self,a,needed,inventory=None):
+        inventory=inventory if inventory is not None else {weight:sum(n for w,n in a.bomb_inventory if w==weight) for weight,_ in a.bomb_inventory}
+        available=[weight for weight,count in inventory.items() if count>0 and a.weapon_enabled(weight)]
+        if not available:return None
+        capable=[weight for weight in available if BOMB_DAMAGE[weight]>=needed]
+        return min(capable) if capable else max(available)
+
+    def choose_weapon(self,a,target,family,needed,inventory=None):
+        if family=='bomb':return self.bomb_weapon_choice(a,needed,inventory)
+        return self.weapon_choice(a,target,inventory) if family=='air' else self.anti_radar_weapon(a,target,inventory)
 
     def retaliation_target(self,a):
         candidates=[]
@@ -620,16 +637,19 @@ class CombatWorld:
         if family=='bomb':return a.usable_bombs
         return sum(a.missile_inventory.get(kind,0) for kind in ANTI_RADAR_WEAPONS if a.weapon_enabled(kind))
 
-    def fire_one(self,a,target,family,now,followup=False):
+    def fire_one(self,a,target,family,now,followup=False,override=False):
         if isinstance(target,Aircraft) and not airborne(target):return False
         if not a.alive or a.state!='airborne' or a.mode=='rtb' or not a.fenced_in or not target.alive:return False
-        if isinstance(target,ICBM) and sum(m.alive and m.target is target for m in self.missiles)>=3:return False
+        if not override and not self.target_has_room(target,a):return False
+        needed=target.health if override else self.damage_needed(target,a.enemy)
         dx,dy=target.x-a.x,target.y-a.y;distance=math.hypot(dx,dy);bearing=math.atan2(dx,dy)
         error=abs(angle_error(bearing,a.heading))
         if family=='bomb':
             if distance<=.1 or distance>BOMB_DISTANCE+.02 or error>math.radians(STATS['bomb_behavior']['alignment_degrees']) or a.speed<=BOMB_DRAG*3600*distance:return False
-            weight=a.take_bomb(target.health)
+            weight=self.bomb_weapon_choice(a,needed)
             if weight is None:return False
+            rack=next(rack for rack in a.bomb_inventory if rack[0]==weight and rack[1]>0)
+            rack[1]-=1
             self.bombs.append(Bomb(a,target,weight,now,(a.x,a.y),a.speed,a.heading,drop_distance=min(BOMB_DISTANCE,distance)))
             if not a.enemy:self.weapon_totals['bombs']+=1
             a.bomb_run_target=target;a.bomb_run_phase='reposition';a.combat_home=True
@@ -645,47 +665,101 @@ class CombatWorld:
             elif kind=='AIM-120':
                 a.crank_side=-1 if angle_error(bearing,a.heading)>=0 else 1
                 a.combat_heading=bearing+a.crank_side*max(0,math.radians(a.radar_angle_deg/2-10))
-        if self._committed_cache is not None:
-            key=(id(target),a.enemy);self._committed_cache[key]=self._committed_cache.get(key,0)+1
+        self.invalidate_commitments()
         a.combat_used_weapons=True;a.engage_target=None
         self.last_target_shot[self.target_shot_key(a,target)]=now
         return True
 
     def start_salvo(self,a,target,family,now):
+        if any(plan['owner'] is a for plan in self.attack_salvos):return False
         if not self.target_has_room(target,a) or now-self.last_target_shot.get(self.target_shot_key(a,target),-math.inf)<SALVO_INTERVAL-1e-9:return False
         if not self.fire_one(a,target,family,now):return False
-        own_limit=a.air_weapons_per_target if family=='air' else a.ground_weapons_per_target
-        remaining=min(own_limit-1,self.remaining_rounds(a,family),self.deconfliction_limit(target,a)-self.committed_shots(target,a.enemy))
-        if remaining>0:
-            self.attack_salvos.append({'owner':a,'target':target,'family':family,'remaining':remaining,'fired':1,'due':now+SALVO_INTERVAL})
-            if self._committed_cache is not None:
-                key=(id(target),a.enemy);self._committed_cache[key]=self._committed_cache.get(key,0)+remaining
+        slots=self.personal_target_limit(a,target)-self.personal_committed(a,target)
+        needed=self.damage_needed(target,a.enemy)
+        inventory=({weight:sum(n for w,n in a.bomb_inventory if w==weight) for weight,_ in a.bomb_inventory}
+                   if family=='bomb' else dict(a.missile_inventory))
+        weapons=[]
+        for _ in range(max(0,slots)):
+            if needed<=1e-9:break
+            kind=self.choose_weapon(a,target,family,needed,inventory)
+            if kind is None:break
+            weapons.append(kind);inventory[kind]-=1;needed-=self.weapon_base_damage(kind)
+        if weapons:
+            self.attack_salvos.append({'owner':a,'target':target,'family':family,'weapons':weapons,'remaining':len(weapons),'fired':1,'due':now+SALVO_INTERVAL})
+            self.invalidate_commitments()
             if family=='bomb':a.combat_home=False;a.bomb_run_phase='attack';a.bomb_run_heading=None
             elif family=='air':a.combat_heading=None;a.engage_target=target
         return True
 
     def process_salvos(self,now):
-        pending=[]
         for plan in self.attack_salvos:
-            a,target=plan['owner'],plan['target']
-            if a.attack_target is not None and a.attack_target is not target:continue
-            if not a.alive or not target.alive or a.state!='airborne' or a.mode=='rtb' or not a.fenced_in or not self.remaining_rounds(a,plan['family']):continue
-            own_limit=a.air_weapons_per_target if plan['family']=='air' else a.ground_weapons_per_target
-            active=sum(weapon.target is target and weapon.owner.enemy==a.enemy for weapon in (*self.missiles,*self.bombs))
-            if plan['fired']>=own_limit or active>=self.deconfliction_limit(target,a):continue
-            if now>=plan['due']-1e-9:
-                if now-self.last_target_shot.get(self.target_shot_key(a,target),-math.inf)<SALVO_INTERVAL-1e-9:
-                    pending.append(plan);continue
-                if not self.fire_one(a,target,plan['family'],now,followup=True):continue
-                plan['remaining']-=1;plan['fired']+=1;plan['due']=now+SALVO_INTERVAL
-            if plan['remaining']>0:pending.append(plan)
-        self.attack_salvos=pending
+            a,target=plan['owner'],plan['target'];weapons=plan.get('weapons',[])
+            if (not weapons or not a.alive or not target.alive or a.state!='airborne' or a.mode=='rtb' or not a.fenced_in
+                or (a.attack_target is not None and a.attack_target is not target) or a.manual_attack_pending):
+                plan['weapons']=[];plan['remaining']=0;self.invalidate_commitments();continue
+            active=self.commitment_totals()[2].get((id(a),id(target)),0)
+            allowance=max(0,self.personal_target_limit(a,target)-active)
+            weapons[:]=weapons[:allowance];plan['remaining']=len(weapons);self.invalidate_commitments()
+            own_damage=sum(self.weapon_base_damage(kind) for kind in weapons)
+            if self.committed_damage(target,a.enemy)-own_damage>=target.health-1e-9:
+                weapons.clear();plan['remaining']=0;self.invalidate_commitments();continue
+            if not weapons or now<plan['due']-1e-9:continue
+            if now-self.last_target_shot.get(self.target_shot_key(a,target),-math.inf)<SALVO_INTERVAL-1e-9:continue
+            weapons.pop(0);plan['remaining']=len(weapons);self.invalidate_commitments()
+            if not self.fire_one(a,target,plan['family'],now,followup=True):
+                weapons.clear();plan['remaining']=0;self.invalidate_commitments();continue
+            plan['fired']+=1;plan['due']=now+SALVO_INTERVAL
+        self.attack_salvos[:]=[plan for plan in self.attack_salvos if plan.get('weapons')]
+        self.invalidate_commitments()
+
+    def order_attack(self,a,target,point=None):
+        self.cancel_owner_salvos(a)
+        if a.mode=='rtb':a.cancel_rtb()
+        a.attack_target=target;a.attack_point=point if point is not None else (target.x,target.y)
+        a.manual_attack_pending=True;a.fenced_in=True;a.pending_auto=None
+        a.fuel_rendezvous=False;a.fuel_resume=None
+        a.bomb_run_target=None;a.bomb_run_phase='attack';a.bomb_run_heading=None;a.combat_home=False
+        a.engage_target=None;a.combat_heading=None;a.auto_attack_target=None
+
+    def guide_manual_attack(self,a,now):
+        target=a.attack_target
+        if target is None or not a.manual_attack_pending:return False
+        if not self.has_usable_weapon_for(a,target):self.cancel_attack_order(a);return False
+        a.combat_home=False;a.engage_target=target;a.auto_attack_target=target
+        if isinstance(target,Aircraft) and self.contact(target,a.enemy) is None:
+            a.engage_target=None
+            if a.attack_point is not None:a.combat_heading=math.atan2(a.attack_point[0]-a.x,a.attack_point[1]-a.y)
+            return True
+        if isinstance(target,Aircraft):family='air'
+        elif self.prefers_anti_radar(a,target):family='anti'
+        else:family='bomb'
+        if family=='bomb':
+            known=(target.id in self.known if isinstance(target,Factory) else id(target) in self.known_ground)
+            if not a.enemy and not known:
+                a.engage_target=None
+                if a.attack_point is not None:a.combat_heading=math.atan2(a.attack_point[0]-a.x,a.attack_point[1]-a.y)
+                return True
+            distance=math.hypot(target.x-a.x,target.y-a.y)
+            if a.bomb_run_target is not target:a.bomb_run_target=target;a.bomb_run_phase='attack'
+            if a.bomb_run_phase=='reposition' and distance<12:
+                a.combat_home=True;a.engage_target=None;return True
+            a.bomb_run_phase='attack'
+            error=abs(angle_error(math.atan2(target.x-a.x,target.y-a.y),a.heading))
+            if distance<BOMB_DISTANCE+.05 and (distance<=.1 or error>math.radians(STATS['bomb_behavior']['alignment_degrees'])):
+                a.bomb_run_phase='reposition';a.combat_home=True;a.engage_target=None
+                a.bomb_run_heading=math.atan2(a.x-target.x,a.y-target.y) if distance>1e-6 else a.heading
+                return True
+        elif family=='anti' and a.attack_point is not None and id(target) not in self.known_ground and id(target) not in self.identified_ground:
+            a.engage_target=None
+            a.combat_heading=math.atan2(a.attack_point[0]-a.x,a.attack_point[1]-a.y)
+        if self.fire_one(a,target,family,now,override=True):a.manual_attack_pending=False
+        return True
 
     def prepare(self,aircraft,now):
         # Eligibility is a snapshot of this simulation step; committed shots stay live.
-        self._target_limit_cache={}
+        self._budget_cache_enabled=True;self.invalidate_commitments()
         try:self.prepare_step(aircraft,now)
-        finally:self._target_limit_cache=None;self._committed_cache=None
+        finally:self._budget_cache_enabled=False;self.invalidate_commitments()
 
     def prepare_step(self,aircraft,now):
         self.current_aircraft=list(aircraft)
@@ -710,16 +784,8 @@ class CombatWorld:
             self._incoming_attackers.setdefault(id(victim),{})[id(owner)]=owner
         for a in aircraft:
             if not a.enemy and a.attack_target is not None and not self.has_usable_weapon_for(a,a.attack_target):self.cancel_attack_order(a)
-        self.process_salvos(now)
-        self._committed_cache={}
-        for weapon in (*self.missiles,*self.bombs):
-            if weapon.target.alive:
-                key=(id(weapon.target),weapon.owner.enemy)
-                self._committed_cache[key]=self._committed_cache.get(key,0)+1
-        for plan in self.attack_salvos:
-            key=(id(plan['target']),plan['owner'].enemy)
-            self._committed_cache[key]=self._committed_cache.get(key,0)+plan['remaining']
-        for a in aircraft:
+        # Manual one-shot requests run before ordinary aircraft allocations.
+        for a in sorted(aircraft,key=lambda unit:not unit.manual_attack_pending):
             a.engage_target=None;a.combat_heading=None
             a.auto_attack_target=None
             if not a.enemy and a.attack_target is not None and not self.has_usable_weapon_for(a,a.attack_target):self.cancel_attack_order(a)
@@ -732,6 +798,7 @@ class CombatWorld:
             a.combat_home=any(b.owner is a for b in self.bombs)
             if not a.alive or a.state!='airborne' or a.mode=='rtb':continue
             if getattr(a,'wave_assembling',False):continue
+            if a.manual_attack_pending and self.guide_manual_attack(a,now):continue
             support=[m for m in self.missiles if m.owner is a and m.kind=='AIM-120' and not m.pitbull
                      and not m.terminal and m.decoy is None and m.target.alive
                      and not self.radar_site_support(m.target,a.enemy)
@@ -747,13 +814,9 @@ class CombatWorld:
             priority_target=a.attack_target if a.attack_target is not None else retaliation[0] if retaliation else None
             if priority_target is not None:
                 # Old pending salvos must not pin the aircraft to a superseded order.
-                retained=[]
-                for old_plan in self.attack_salvos:
-                    if old_plan['owner'] is a and old_plan['target'] is not priority_target:
-                        key=(id(old_plan['target']),a.enemy)
-                        self._committed_cache[key]=max(0,self._committed_cache.get(key,0)-old_plan['remaining'])
-                    else:retained.append(old_plan)
-                self.attack_salvos=retained
+                retained=[plan for plan in self.attack_salvos if plan['owner'] is not a or plan['target'] is priority_target]
+                if len(retained)!=len(self.attack_salvos):
+                    self.attack_salvos[:]=retained;self.invalidate_commitments()
                 if a.bomb_run_target is not None and a.bomb_run_target is not priority_target:
                     a.bomb_run_target=None;a.bomb_run_phase='attack';a.bomb_run_heading=None
                 a.combat_home=any(b.owner is a and b.target is priority_target for b in self.bombs)
@@ -835,6 +898,8 @@ class CombatWorld:
                     self.start_salvo(a,target,'bomb',now)
             else:
                 self.start_salvo(a,target,'air',now)
+        # Recheck queued shots after manual overrides and any new allocations.
+        self.process_salvos(now)
 
     def emit_flare(self,a,due,side,now,burst):
         if not a.alive:return
@@ -1022,8 +1087,10 @@ class CombatWorld:
             gun.shot_timer+=dt
             target=best[1];tx,ty=best[2:4]
             vx,vy=velocity(target) if not isinstance(target,Bomb) else (math.sin(target.heading)*target.speed_at(now),math.cos(target.heading)*target.speed_at(now))
-            travel=math.hypot(tx-gun.x,ty-gun.y)/(bullet_speed/3600)
-            aim=math.atan2(tx+vx/3600*travel-gun.x,ty+vy/3600*travel-gun.y)
+            # Solve flight time to the moving intercept, rather than estimating
+            # it from current distance (which overleads approaching targets).
+            point=intercept_point((gun.x,gun.y),(tx,ty),(vx,vy),bullet_speed)
+            aim=math.atan2(point[0]-gun.x,point[1]-gun.y)
             while getattr(gun,ammo_attribute)>0 and gun.shot_timer>=interval-1e-9:
                 gun.shot_timer-=interval
                 setattr(gun,ammo_attribute,getattr(gun,ammo_attribute)-1)

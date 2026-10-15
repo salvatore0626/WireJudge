@@ -59,6 +59,7 @@ class Aircraft:
     crew_active: bool = False
     depart_after_service: bool = False
     redeploy_after_service: bool = False
+    redeploy_on_rtb: bool = False
     rtb_resume: object = field(default=None,repr=False,compare=False)
     fuel: float = -1.
     cms: int = -1
@@ -86,6 +87,7 @@ class Aircraft:
     bomb_run_heading: object = None
     combat_heading: object = None
     crank_side: int = 1
+    manual_attack_pending: bool = False
     attack_target: object = field(default=None,repr=False,compare=False)
     auto_attack_target: object = field(default=None,repr=False,compare=False)
     attack_point: object = None
@@ -314,7 +316,7 @@ class Aircraft:
         self.service_remaining=0.;self.crew_active=False
         if self.redeploy_after_service and self.alive and not self.enemy:
             self.redeploy_after_service=False
-            self.attack_target=None;self.attack_point=None;self.auto_attack_target=None
+            self.manual_attack_pending=False;self.attack_target=None;self.attack_point=None;self.auto_attack_target=None
             self.engage_target=None;self.combat_heading=None;self.combat_home=False
             self.bomb_run_target=None;self.bomb_run_heading=None
             saved=self.rtb_resume;self.rtb_resume=None
@@ -331,6 +333,7 @@ class Aircraft:
                     if self.mode=='formation':self.mode='loiter'
                     self.depart()
                 self.fenced_in=order[-1]
+        else:self.rtb_resume=None
 
     def retime_service(self,level):
         remaining_fraction=self.service_work_remaining/self.service_work_total if self.service_work_total else 0.
@@ -368,12 +371,18 @@ class Aircraft:
         self.cms-=1
         return (rng or random).random()<STATS['countermeasures']['success_probability']
 
-    def rtb(self,redeploy=False):
-        if redeploy and self.mode!='rtb':
+    def set_redeploy_on_rtb(self,enabled):
+        self.redeploy_on_rtb=bool(enabled)
+        if self.mode=='rtb' and self.state in ('rtb','approach','rollout','servicing'):
+            self.redeploy_after_service=self.redeploy_on_rtb
+
+    def rtb(self,redeploy=None):
+        if redeploy is None:redeploy=self.redeploy_on_rtb
+        self.manual_attack_pending=False
+        if self.mode!='rtb':
             order=self.fuel_resume if self.fuel_rendezvous and self.fuel_resume is not None else (
                 self.mode,tuple(self.orbit_center),self.orbit_radius,self.clockwise,list(self.path),self.waypoint,self.leader,self.fenced_in)
             self.rtb_resume=(order,self.speed_setting)
-        elif not redeploy:self.rtb_resume=None
         self.redeploy_after_service=bool(redeploy)
         self.pending_auto=None
         for follower in list(self.followers):follower.loiter((0.,0.))
@@ -395,7 +404,7 @@ class Aircraft:
         if self.mode!='rtb' or self.state not in ('airborne','rtb','approach'):return False
         self.pending_auto=None;self.fuel_rendezvous=False;self.fuel_resume=None
         self.redeploy_after_service=False;self.rtb_resume=None
-        self.attack_target=None;self.attack_point=None;self.engage_target=None
+        self.manual_attack_pending=False;self.attack_target=None;self.attack_point=None;self.engage_target=None
         self.auto_attack_target=None;self.combat_heading=None;self.combat_home=False
         self.bomb_run_target=None;self.bomb_run_heading=None;self.rtb_stage=0
         self.loiter((self.x,self.y),radius=7.)
@@ -418,7 +427,7 @@ class Aircraft:
 
     def direct_to(self,point):
         self.detach()
-        self.attack_target=None;self.attack_point=None;self.auto_attack_target=None
+        self.manual_attack_pending=False;self.attack_target=None;self.attack_point=None;self.auto_attack_target=None
         self.engage_target=None;self.combat_heading=None;self.combat_home=False
         self.bomb_run_target=None;self.bomb_run_heading=None
         self.mode='direct';self.orbit_center=tuple(point)
@@ -617,7 +626,7 @@ class AirOperations:
         tanker=self.refuel_candidate(a)
         if tanker is None:a.request_auto('rtb','fuel');return
         a.fuel_resume=(a.mode,a.orbit_center,a.orbit_radius,a.clockwise,list(a.path),a.waypoint,a.leader,a.fenced_in)
-        a.attack_target=None;a.attack_point=None;a.engage_target=None;a.auto_attack_target=None;a.combat_heading=None
+        a.manual_attack_pending=False;a.attack_target=None;a.attack_point=None;a.engage_target=None;a.auto_attack_target=None;a.combat_heading=None
         a.fenced_in=False;a.form_up(tanker);a.fuel_rendezvous=True
 
     def formation_guidance(self,a,dt):

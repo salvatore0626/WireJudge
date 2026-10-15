@@ -94,7 +94,7 @@ class Campaign:
             for n in range(720):
                 angle=n*math.tau/720;p=(self.airfield.x+radius*math.sin(angle),self.airfield.y+radius*math.cos(angle))
                 if self.clear(p,False,self.settings['base_separation_nm']):return p
-        raise RuntimeError('Campaign band has no room for bases; reduce base separation or composition counts.')
+        raise RuntimeError('Campaign zone has no room for bases; reduce base separation or composition counts.')
 
     def unit_point(self,center,band):
         for attempt in range(self.settings['placement_attempts']*20):
@@ -106,7 +106,7 @@ class Campaign:
         for _ in range(self.settings['placement_attempts']*100):
             point=self.random_point(band)
             if self.clear(point,False):return point
-        raise RuntimeError('Campaign band has no room for units; reduce unit separation or composition counts.')
+        raise RuntimeError('Campaign zone has no room for units; reduce unit separation or composition counts.')
 
     def counts(self,pair):return self.rng.randint(*pair)
 
@@ -140,7 +140,7 @@ class Campaign:
         for _ in range(self.random_factory_count(number)):
             point=self.base_point(band);self.occupied.append(point)
             band.random_factories.append(self.ground_factory('Factory',*point))
-        self.combat.events.append((now,f'Band {number} opened: {inner:g}–{band.outer:g} NM · {len(band.runways)} runways',0,'status'))
+        self.combat.events.append((now,f'Zone {number} opened: {inner:g}–{band.outer:g} NM · {len(band.runways)} runways',0,'status'))
         return band
 
     def start(self,now=0.):

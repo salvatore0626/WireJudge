@@ -17,8 +17,8 @@ from game_campaign_comparison import CampaignComparison
 
 def label(key):
     special = {'cms': 'Countermeasures', 'icbm': 'ICBM', 'ground_units': 'Friendly ground units',
-               'Power': 'Generator', 'objectives':'Objectives', 'tiers': 'Campaign bands', 'default_loadouts': 'Friendly default loadouts'}
-    return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize())
+               'Power': 'Generator', 'objectives':'Objectives', 'tiers': 'Campaign zones', 'default_loadouts': 'Friendly default loadouts'}
+    return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize()).replace('band', 'zone').replace('Band', 'Zone')
 
 
 def get_at(data, path):
@@ -249,7 +249,7 @@ class ConfigEditor(tk.Tk):
         self.tree_paths={}
         query=self.search.get().strip().lower()
         def add(value,path,parent):
-            text=(f'Objective {path[-1]+1} · {value.get("title","")}' if path[0]=='objectives' else f'Band {path[-1]+1}') if isinstance(path[-1],int) else label(path[-1])
+            text=(f'Objective {path[-1]+1} · {value.get("title","")}' if path[0]=='objectives' else f'Zone {path[-1]+1}') if isinstance(path[-1],int) else label(path[-1])
             matches=not query or any(query in (' '.join(map(str,p))+' '+label(p[-1])).lower() for p,_ in leaves(value,path))
             if not matches:return
             iid=self.tree.insert(parent,'end',text=text,open=bool(query) or len(path)==1)
@@ -284,12 +284,12 @@ class ConfigEditor(tk.Tk):
         if path is None:
             self.heading.configure(text='No matching settings')
             return
-        self.heading.configure(text=' / '.join((f'Objective {p+1}' if path[0]=='objectives' else f'Band {p+1}') if isinstance(p,int) else label(p) for p in path))
+        self.heading.configure(text=' / '.join((f'Objective {p+1}' if path[0]=='objectives' else f'Zone {p+1}') if isinstance(p,int) else label(p) for p in path))
         ttk.Button(self.actions,text='Reset this group',command=self.reset_group).pack(side='left')
-        if path[0]=='campaign':ttk.Button(self.actions,text='Compare Bands',command=self.compare_campaign).pack(side='left',padx=6)
+        if path[0]=='campaign':ttk.Button(self.actions,text='Compare Zones',command=self.compare_campaign).pack(side='left',padx=6)
         if path[:2]==('campaign','tiers'):
-            ttk.Button(self.actions,text='Duplicate band' if len(path)>2 else 'Add band',command=self.add_band).pack(side='left',padx=6)
-            if len(path)>2:ttk.Button(self.actions,text='Remove band',command=self.remove_band).pack(side='left')
+            ttk.Button(self.actions,text='Duplicate zone' if len(path)>2 else 'Add zone',command=self.add_band).pack(side='left',padx=6)
+            if len(path)>2:ttk.Button(self.actions,text='Remove zone',command=self.remove_band).pack(side='left')
         if path[0]=='objectives':
             ttk.Button(self.actions,text='Add objective',command=lambda:self.edit_objective('add')).pack(side='left',padx=4)
             if len(path)>1:
@@ -299,7 +299,7 @@ class ConfigEditor(tk.Tk):
         def build(value,p,depth=0):
             if isinstance(value,(dict,list)):
                 if p!=path:
-                    ttk.Label(self.form,text=label(p[-1]) if not isinstance(p[-1],int) else f'Objective {p[-1]+1}' if p[0]=='objectives' else f'Band {p[-1]+1}',font=('Segoe UI',11,'bold')).pack(anchor='w',pady=(14,5))
+                    ttk.Label(self.form,text=label(p[-1]) if not isinstance(p[-1],int) else f'Objective {p[-1]+1}' if p[0]=='objectives' else f'Zone {p[-1]+1}',font=('Segoe UI',11,'bold')).pack(anchor='w',pady=(14,5))
                 if isinstance(value,list) and rule_at(p).get('$length') is None and p not in (('campaign','tiers'),('objectives',)):
                     controls=ttk.Frame(self.form);controls.pack(anchor='w',pady=4)
                     ttk.Button(controls,text='+ Add entry',command=lambda:self.resize_list(p,1)).pack(side='left')
@@ -415,7 +415,7 @@ class ConfigEditor(tk.Tk):
         index=self.selection[2]
         def change(data):
             tiers=data['campaign']['tiers']
-            if len(tiers)==1:raise ValueError('Keep at least one campaign band.')
+            if len(tiers)==1:raise ValueError('Keep at least one campaign zone.')
             tiers.pop(index)
             self.selection=('campaign','tiers',min(index,len(tiers)-1))
         self.change_structure(change)

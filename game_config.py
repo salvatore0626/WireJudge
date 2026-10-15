@@ -610,13 +610,13 @@ def load_stats(path=STATS_PATH):
         if data['icbm']['launch_speed_knots']>data['icbm']['speed_knots']:raise ValueError('icbm.launch_speed_knots must not exceed speed_knots')
         campaign=data['campaign']
         if campaign['random_factories_start_count'] and campaign['core_factory_min_radius_nm']>=campaign['safe_radius_nm']:raise ValueError('campaign core factory minimum radius must be inside the safe core')
-        if not campaign['tiers']:raise ValueError('campaign.tiers must contain at least one band')
+        if not campaign['tiers']:raise ValueError('campaign.tiers must contain at least one zone')
         if campaign['placement_attempts']<1:raise ValueError('campaign.placement_attempts must be positive')
         if campaign['garrison_radius_nm']<campaign['unit_separation_nm']:raise ValueError('campaign garrison radius must cover unit separation')
         for i,tier in enumerate(campaign['tiers']):
             pairs=[tier['airfields'],tier['outposts'],*tier['airfield_ground'].values(),*tier['outpost_ground'].values(),*tier['wave_aircraft'].values()]
             if any(pair[0]>pair[1] for pair in pairs):raise ValueError(f'campaign.tiers[{i}]: minimum count exceeds maximum')
-            if tier['airfields'][0]<1:raise ValueError(f'campaign.tiers[{i}]: each band needs at least one runway')
+            if tier['airfields'][0]<1:raise ValueError(f'campaign.tiers[{i}]: each zone needs at least one runway')
         for group in ('ground_units','enemy_ground_units'):
             for key,unit in data[group].items():
                 maximum=unit.get('range_nm')

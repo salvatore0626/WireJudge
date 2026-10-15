@@ -31,12 +31,12 @@ def display(value):
 def campaign_comparison(data):
     """Return columns, row metadata and raw values; no game imports or arbitrary score."""
     settings=data['campaign'];tiers=settings['tiers']
-    columns=[f'Band {i+1}' for i in range(len(tiers))]+[f'Continue · {len(tiers)+1}']
+    columns=[f'Zone {i+1}' for i in range(len(tiers))]+[f'Continue · {len(tiers)+1}']
     expanded=[*tiers,scaled_tier(tiers[-1],settings['infinite_growth_fraction'])]
     rows=[]
     def section(title):rows.append({'label':title,'values':['']*len(expanded),'section':True,'path':None})
     def row(title,values,path=None):rows.append({'label':title,'values':values,'section':False,'path':path})
-    section('BAND OVERVIEW')
+    section('ZONE OVERVIEW')
     row('Distance from player base', [f'{settings["safe_radius_nm"]+i*settings["band_width_nm"]:g}–{settings["safe_radius_nm"]+(i+1)*settings["band_width_nm"]:g} NM' for i in range(len(expanded))])
     health=[settings['runway_health']+i*settings['runway_health_per_band'] for i in range(len(tiers))]
     health.append(rounded_growth(health[-1],settings['infinite_growth_fraction']))
@@ -61,12 +61,12 @@ def campaign_comparison(data):
                 amount=product(t[base],pair);unit_hp=data['enemy_ground_units'][kind]['health']
                 hp=[h+n*unit_hp for h,n in zip(hp,amount)]
         ground_hp.append(hp)
-    row('Ground units / band (includes factories)',totals)
+    row('Ground units / zone (includes factories)',totals)
     row('Ground unit HP (excludes runways)',ground_hp)
     for group,title in (('airfield_ground','DEFENDERS PER AIRFIELD'),('outpost_ground','DEFENDERS PER OUTPOST'),('wave_aircraft','AIRCRAFT PER WAVE / AIRFIELD')):
         section(title)
         for kind in tiers[0][group]:row(kind,[t[group][kind] for t in expanded],(group,kind))
-    section('TOTAL GROUND UNITS PER BAND')
+    section('TOTAL GROUND UNITS PER ZONE')
     for kind in tiers[0]['airfield_ground']:
         values=[]
         for t,extra in zip(expanded,factories):
@@ -80,7 +80,7 @@ class CampaignComparison(tk.Toplevel):
     def __init__(self,parent,read_data,apply_edit):
         super().__init__(parent)
         self.read_data=read_data;self.apply_edit=apply_edit;self.rows=[];self.cell_editor=None;self.validating=False
-        self.title('Campaign · Compare Bands')
+        self.title('Campaign · Compare Zones')
         width=min(1160,max(850,self.winfo_screenwidth()-100));height=min(800,max(500,self.winfo_screenheight()-140))
         self.geometry(f'{width}x{height}');self.minsize(850,500)
         self.configure(bg='#101b2b')
@@ -99,7 +99,7 @@ class CampaignComparison(tk.Toplevel):
         frame.rowconfigure(0,weight=1);frame.columnconfigure(0,weight=1)
         self.table.tag_configure('section',background='#294a6b',foreground='#ffffff',font=('Segoe UI',10,'bold'))
         self.table.tag_configure('overview',foreground='#86d7b0')
-        self.footer=ttk.Label(self,text='Values are minimum–maximum for new spawns; prior survivors are excluded. Click a configured count to edit min / max. Enter applies; Tab moves across bands; Escape cancels. Totals and Continue preview are calculated. Save in the main editor to write changes.',style='Muted.TLabel',padding=14,wraplength=1100)
+        self.footer=ttk.Label(self,text='Values are minimum–maximum for new spawns; prior survivors are excluded. Click a configured count to edit min / max. Enter applies; Tab moves across zones; Escape cancels. Totals and Continue preview are calculated. Save in the main editor to write changes.',style='Muted.TLabel',padding=14,wraplength=1100)
         self.footer.pack(fill='x')
         self.bind('<Configure>',self.resized)
         self.table.bind('<Button-1>',self.edit_cell)
@@ -129,7 +129,7 @@ class CampaignComparison(tk.Toplevel):
         for i,row in enumerate(self.rows):
             self.table.insert('','end',iid=str(i),text=row['label'],values=[display(v) for v in row['values']],tags=('section',) if row['section'] else ('overview',) if i<12 else ())
         s=data['campaign']
-        self.summary.configure(text=f'{self.band_count} bands · {s["safe_radius_nm"]:g} NM safe core · Core factories: {s["random_factories_start_count"]} · First wave: {s["first_wave_delay_seconds"]/60:g} min · Initial interval: {s["wave_interval_seconds"]/60:g} min (+{s["wave_interval_growth_fraction"]*100:g}% / wave) · Continue growth: {s["infinite_growth_fraction"]*100:g}%')
+        self.summary.configure(text=f'{self.band_count} zones · {s["safe_radius_nm"]:g} NM safe core · Core factories: {s["random_factories_start_count"]} · First wave: {s["first_wave_delay_seconds"]/60:g} min · Initial interval: {s["wave_interval_seconds"]/60:g} min (+{s["wave_interval_growth_fraction"]*100:g}% / wave) · Continue growth: {s["infinite_growth_fraction"]*100:g}%')
 
     def edit_cell(self,event):
         item=self.table.identify_row(event.y);column=self.table.identify_column(event.x)

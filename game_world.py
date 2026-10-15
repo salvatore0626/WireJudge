@@ -1,10 +1,30 @@
 """Scattered enemy world and gameplay RWR estimates (not a radar track)."""
+from dataclasses import dataclass
 import math
 import random
 from game_settings import STATS
 
 WORLD_RADIUS_NM=STATS['world']['radius_nm']
 RWR_RANGE_NM=STATS['world']['rwr_range_nm']
+
+@dataclass
+class RWRSignal:
+    emitter: object
+    x: float
+    y: float
+    quality: float
+    enemy: bool = True
+    name: str = 'RWR Signal'
+
+    @property
+    def alive(self):return self.emitter.radar_emitting
+
+    @property
+    def confidence(self):
+        # Quality divides both bearing and range uncertainty. Show how much
+        # triangulation has reduced uncertainty relative to one receiver.
+        return max(0.,min(1.,1-1/max(1.,self.quality)))
+
 
 class RWR:
     def __init__(self,seed=None):

@@ -210,3 +210,21 @@ class HealthInspector(tk.Canvas):
         if factor!=1:self.scale('all',0,0,factor,factor)
         height=round(35*factor)
         if height!=getattr(self,'render_height',None):self.render_height=height;self.configure(height=height)
+
+
+class ConfidenceInspector(HealthInspector):
+    def update_signal(self,signal):
+        self.unit=signal;self.render()
+
+    def render(self):
+        if self.unit is None:return
+        self.delete('all')
+        fraction=self.unit.confidence
+        self.create_rectangle(5,5,265,30,fill=FACE,outline='#405168')
+        if fraction:self.create_rectangle(6,6,6+258*fraction,29,fill=health_color(fraction),outline='')
+        self.create_rectangle(82,9,188,26,fill=FACE,outline='')
+        self.create_text(135,17,text='Confidence',fill=TEXT,font=('Helvetica',10,'bold'))
+        width=self.winfo_width();factor=width/270 if width>1 else 1.
+        if factor!=1:self.scale('all',0,0,factor,factor)
+        height=round(35*factor)
+        if height!=getattr(self,'render_height',None):self.render_height=height;self.configure(height=height)

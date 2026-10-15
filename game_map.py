@@ -9,9 +9,9 @@ from tkinter import ttk, font as tkfont
 from plots import BG, PANEL, TEXT, MUTED
 from game_radar import footprint, union_outline, range_paths, coverage_outline
 from game_aircraft_inspector import AircraftInspector
-from game_ground_inspector import GroundInspector, HealthInspector, AmmoInspector
+from game_ground_inspector import GroundInspector, HealthInspector, AmmoInspector, ConfidenceInspector
 from game_icbm_inspector import ICBMInspector, ICBMSiloInspector, ProjectileInspector, HelicopterInspector
-from game_world import RWR, RWR_RANGE_NM
+from game_world import RWR, RWRSignal, RWR_RANGE_NM
 from game_campaign import Campaign, EnemyRunway
 from game_results import ResultBoard, results_header
 from game_start import StartScene
@@ -454,6 +454,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.selected = self.airfield
         self.money = STATS['economy']['starting_money']
         self.aircraft = {}
+        self.aircraft_drag=None
         self.operations=AirOperations()
         self.game_audio=GameAudio(lambda:(self.app.settings.sound_effects,self.app.settings.sound_volume))
         self.game_audio.set_muted(getattr(self.app,'game_audio_muted',False))
@@ -637,7 +638,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         ttk.Button(self.debug_panel,text='Cancel',command=self.cancel_placement).pack(fill='x',pady=(5,0))
         self.debug_kill_button=ttk.Button(self.debug_panel,text='Kill Tool',command=self.toggle_debug_kill)
         self.debug_kill_button.pack(fill='x',pady=(8,0))
-        self.bands_button=ttk.Button(self.debug_panel,text='Show Bands',style='GamePlay.TButton' if self.show_bands else 'TButton',command=self.toggle_bands)
+        self.bands_button=ttk.Button(self.debug_panel,text='Show Zones',style='GamePlay.TButton' if self.show_bands else 'TButton',command=self.toggle_bands)
         self.bands_button.pack(fill='x',pady=(6,0))
         self.log_panel=ttk.Frame(self.menu_host,padding=10)
         ttk.Label(self.log_panel,text='LOG',font=('Helvetica',11,'bold')).pack(anchor='w',pady=(0,8))
@@ -701,6 +702,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.projectile_instruments=ProjectileInspector(inspector)
         self.helicopter_instruments=HelicopterInspector(inspector)
         self.silo_instruments=ICBMSiloInspector(inspector)
+        self.rwr_confidence=ConfidenceInspector(inspector)
         self.airfield_health=HealthInspector(inspector)
         self.inspector_label=ttk.Label(inspector,textvariable=self.inspector_text,justify='left',wraplength=270)
         self.inspector_label.pack(anchor='w',fill='x')
@@ -723,8 +725,10 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         unlock_host=ttk.Frame(self.upgrade_panel);unlock_host.pack(fill='x')
         self.unlock_hosts.append(unlock_host)
         self.aircraft_controls=ttk.Frame(inspector)
+        self.change_loadout_button=ttk.Button(self.aircraft_controls,text='Change Loadout',command=self.open_selected_loadout)
         self.movement_text=tk.StringVar()
         row=ttk.Frame(self.aircraft_controls);row.pack(fill='x',pady=(8,4))
+        self.aircraft_deploy_row=row
         self.rtb_button=ttk.Button(row,text='RTB',width=6,command=self.command_rtb)
         self.rtb_button.pack(side='left',fill='x',expand=True,padx=(0,3))
         self.fence_out_button=ttk.Button(row,text='Fence Out',width=9,command=lambda:self.set_fence(False))
@@ -738,7 +742,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.loiter_button.pack(side='left',fill='x',expand=True,padx=(0,3))
         self.patrol_button=ttk.Button(row,text='Patrol',width=5,command=lambda:self.start_movement('patrol'))
         self.patrol_button.pack(side='left',fill='x',expand=True)
-        self.form_up_button=ttk.Button(self.aircraft_controls,text='Form Up',command=lambda:self.start_movement('form_up'))
+        self.form_up_button=ttk.Button(self.aircraft_controls,text='Form Up',command=self.command_form_up)
         self.form_up_button.pack(fill='x',pady=(5,0))
         self.attack_button=ttk.Button(self.aircraft_controls,text='Attack',command=self.attack_command)
         self.attack_button.pack(fill='x',pady=(5,0))
@@ -877,7 +881,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.hud_logistics=tk.Canvas(resources,background=BG,highlightthickness=0,height=25,width=105)
         self.hud_logistics.pack(side='left')
         self.contacts_text=tk.StringVar(value='Contacts: 0')
-        self.band_text=tk.StringVar(value=f'Campaign · {len(STATS["campaign"]["tiers"])} bands')
+        self.band_text=tk.StringVar(value=f'Campaign · {len(STATS["campaign"]["tiers"])} zones')
         ttk.Label(right,textvariable=self.band_text,foreground=MUTED).pack(anchor='w',pady=(0,4))
         self.canvas=tk.Canvas(right,background=BG,highlightthickness=1,highlightbackground='#344258')
         self.canvas.pack(fill='both',expand=True)
@@ -1039,7 +1043,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.campaign.observe([self.airfield,*self.aircraft.values(),*self.radars,*self.sams,*self.ciws])
         band=self.campaign.bands[-1]
         remaining=sum(r.alive for r in band.runways)
-        self.band_text.set(f'Band {band.number} · Runways remaining: {remaining}/{len(band.runways)}'+(' · Infinite' if self.campaign.infinite else ''))
+        self.band_text.set(f'Zone {band.number} · Runways remaining: {remaining}/{len(band.runways)}'+(' · Infinite' if self.campaign.infinite else ''))
         key=(band.number,remaining)
         if key!=getattr(self,'campaign_draw_key',None):self.campaign_draw_key=key;self.request_draw()
         if not self.airfield.alive:self.finish_run('loss')
@@ -1160,6 +1164,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
                               command=lambda n=slot:self.select_aircraft_slot(n))
             button.grid(row=slot//5,column=slot%5,padx=2,pady=2,sticky='nsew')
             self.slot_buttons.append(button)
+            self.bind_aircraft_reordering(button,slot,'hangar')
         for col in range(5):slots.columnconfigure(col,weight=1,uniform='slots')
         scroll=ttk.Frame(self.aircraft_panel);scroll.pack(fill='both',expand=True)
         self.aircraft_canvas=tk.Canvas(scroll,background=BG,highlightthickness=0,width=270)
@@ -1308,8 +1313,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
     def attack_command(self):
         if not isinstance(self.selected,Aircraft) or self.selected.enemy:return
         if self.selected.attack_target is not None:
-            self.selected.attack_target=None;self.selected.attack_point=None
-            self.selected.bomb_run_target=None;self.selected.bomb_run_phase='attack'
+            self.combat.cancel_attack_order(self.selected)
             self.cancel_movement();self.refresh_inspector();return
         self.start_movement('attack')
 
@@ -1320,8 +1324,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         if not self.combat.has_usable_weapon_for(a,target):
             self.combat.cancel_attack_order(a)
             self.cancel_movement();self.refresh_inspector();self.request_draw();return
-        a.attack_target=target;a.attack_point=point if point is not None else (target.x,target.y);a.fenced_in=True
-        a.bomb_run_target=None;a.bomb_run_phase='attack';a.bomb_run_heading=None
+        self.combat.order_attack(a,target,point)
         self.cancel_movement();self.refresh_inspector();self.request_draw()
 
     def aircraft_for_slot(self,slot):
@@ -1393,6 +1396,72 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         if aircraft is not None and hasattr(self,'color_name'):
             name=next(name for name,color in AIRCRAFT_COLORS if color==aircraft.color)
             self.color_name.set(f'Aircraft Color · {name}')
+
+    def open_selected_loadout(self):
+        aircraft=self.selected
+        if not isinstance(aircraft,Aircraft) or aircraft.enemy or not aircraft.in_hangar:return False
+        slot=next((slot for slot,unit in self.aircraft.items() if unit is aircraft),None)
+        if slot is None:return False
+        self.aircraft_slot=slot
+        self.show_left_menu('Hangar')
+        return True
+
+    def bind_aircraft_reordering(self,widget,slot,surface):
+        widget.bind('<ButtonPress-1>',lambda event,n=slot,s=surface:self.begin_aircraft_drag(event,n,s))
+        widget.bind('<B1-Motion>',self.move_aircraft_drag)
+        widget.bind('<ButtonRelease-1>',self.end_aircraft_drag)
+
+    def begin_aircraft_drag(self,event,slot,surface):
+        self.aircraft_drag={'slot':slot,'surface':surface,'x':event.x_root,'y':event.y_root,'moved':False,'widget':event.widget}
+        return 'break'
+
+    def move_aircraft_drag(self,event):
+        drag=self.aircraft_drag
+        if drag is None:return 'break'
+        aircraft=self.aircraft.get(drag['slot'])
+        if aircraft is not None and aircraft.alive and math.hypot(event.x_root-drag['x'],event.y_root-drag['y'])>=6:
+            drag['moved']=True;drag['widget'].configure(cursor='fleur')
+        return 'break'
+
+    def end_aircraft_drag(self,event):
+        drag=self.aircraft_drag;self.aircraft_drag=None
+        if drag is None:return 'break'
+        drag['widget'].configure(cursor='hand2' if drag['surface']=='map' else '')
+        if drag['moved']:
+            widget=self.winfo_containing(event.x_root,event.y_root)
+            slots={button:slot for slot,button in self.map_aircraft_buttons.items()}
+            slots.update({button:slot for slot,button in enumerate(self.slot_buttons)})
+            target=slots.get(widget)
+            if target is not None:self.reorder_aircraft(drag['slot'],target)
+        elif drag['surface']=='map':self.select_map_aircraft(drag['slot'])
+        else:self.select_aircraft_slot(drag['slot'])
+        return 'break'
+
+    def reorder_aircraft(self,source,target):
+        capacity=self.aircraft_capacity
+        aircraft=self.aircraft.get(source)
+        if source==target or not (0<=source<capacity and 0<=target<capacity) or aircraft is None or not aircraft.alive:return False
+        # Insert at the destination, shifting intervening slots and preserving objects.
+        contents=[(slot,self.aircraft.get(slot)) for slot in range(capacity)]
+        contents.insert(target,contents.pop(source))
+        mapping={old:new for new,(old,unit) in enumerate(contents)}
+        reordered={slot:unit for slot,unit in self.aircraft.items() if slot>=capacity}
+        for slot,(old,unit) in enumerate(contents):
+            if unit is None:continue
+            reordered[slot]=unit;unit.parking_slot=slot
+            if unit.alive and unit.state in ('parked','servicing','queued'):unit.x,unit.y=parking_position(slot)
+        self.aircraft.clear();self.aircraft.update(reordered)
+        for name in ('aircraft_button_health','aircraft_damage_times'):
+            records=getattr(self,name,{})
+            setattr(self,name,{mapping.get(slot,slot):value for slot,value in records.items()})
+        self.aircraft_slot=mapping.get(self.aircraft_slot,self.aircraft_slot)
+        self.aircraft_button_states=None;self.unit_list_signature=None;self.auto_prompt_signature=None
+        self.last_shortcut=(None,0.)
+        self.refresh_map_aircraft_buttons();self.refresh_slot_colors()
+        if self.aircraft_menu_open:self.refresh_aircraft_menu()
+        if self.left_menu=='Unit List':self.refresh_unit_list()
+        self.refresh_auto_prompts();self.refresh_inspector();self.request_draw()
+        return True
 
     def select_aircraft_slot(self,slot):
         if not 0<=slot<max(HANGAR_LEVELS):return
@@ -1481,17 +1550,23 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.app.game_audio_muted=self.game_audio.muted
         self.mute_button.configure(text='Unmute' if self.game_audio.muted else 'Mute',style='GameMuted.TButton' if self.game_audio.muted else 'GameMute.TButton')
 
-    def buy_aircraft(self,kind):
+    def buy_aircraft(self,kind,rebuy=False):
         slot=self.aircraft_slot
         old=self.aircraft.get(slot)
         if kind not in AIRCRAFT_TYPES or not self.unlocked(kind) or kind=='Suicide Drone' or not 0<=slot<self.aircraft_capacity or (old is not None and old.alive) or self.money<AIRCRAFT_TYPES[kind]['price']:return False
+        if rebuy and (old is None or old.alive or getattr(old,'sold',False) or old.kind!=kind):return False
         spec=AIRCRAFT_TYPES[kind]
         hardpoints,bays=DEFAULT_LOADOUTS.get(kind,(['Empty']*spec['hardpoints'],['Empty']*spec['bays']))
         hardpoints=[value if self.loadout_unlocked(value) else loadout_label('2× AIM-9') for value in hardpoints]
         bays=[value if self.loadout_unlocked(value) and bomb_bay_allowed(kind,value) else loadout_label('4× 250 lb Bomb') for value in bays]
+        if rebuy:
+            hardpoints=list(old.hardpoints);bays=list(old.bays)
         self.spend_money(spec["price"],f'Buy {kind} #{slot+1}')
         self.play_game_sound('buy_aircraft')
         self.aircraft[slot]=Aircraft(kind,list(hardpoints),list(bays),parking_slot=slot,state='parked',purchase_price=spec["price"])
+        if rebuy:
+            self.aircraft[slot].color=old.color
+            self.aircraft[slot].redeploy_on_rtb=old.redeploy_on_rtb
         self.progress_action('build',kind)
         if old is not None and self.selected is old:self.selected=self.aircraft[slot]
         self.refresh_aircraft_menu();self.refresh_inspector()
@@ -1545,6 +1620,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         return (self.aircraft_slot,id(aircraft),aircraft.alive if aircraft else False,
                 aircraft.in_hangar if aircraft else False,
                 aircraft.state if aircraft else None,aircraft.needs_service if aircraft else False,
+                aircraft.redeploy_on_rtb if aircraft else False,
                 tuple((k,self.money>=s['price']) for k,s in AIRCRAFT_TYPES.items()) if aircraft is None or not aircraft.alive else None,self.airfield.level,self.aircraft_capacity)
 
     def refresh_aircraft_menu(self):
@@ -1562,6 +1638,11 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         if slot>=self.aircraft_capacity:
             ttk.Label(content,text='Upgrade your hangers to unlock more slots',wraplength=260,foreground=MUTED).pack(anchor='w',pady=8)
         elif aircraft is None:
+            previous=self.aircraft.get(slot)
+            if previous is not None and not previous.alive and not getattr(previous,'sold',False):
+                ready=self.unlocked(previous.kind) and self.money>=AIRCRAFT_TYPES[previous.kind]['price']
+                ttk.Button(content,text=f'Rebuy: {previous.kind}',style='GamePurchaseReady.TButton' if ready else 'TButton',
+                           state='normal' if ready else 'disabled',command=lambda k=previous.kind:self.buy_aircraft(k,rebuy=True)).pack(fill='x',pady=(0,12))
             for kind in AIRCRAFT_BUY_ORDER:
                 spec=AIRCRAFT_TYPES[kind]
                 unlocked=self.unlocked(kind)
@@ -1605,6 +1686,9 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
                 ttk.Button(content,style='GameSell.TButton',text=f'Sell · {dollars(aircraft.purchase_price*STATS["economy"]["sell_refund_fraction"])} refund',command=lambda n=slot:self.sell_aircraft(n)).pack(fill='x',pady=(12,0))
             else:ttk.Label(content,text='Loadout editing and selling are available in the hangar.',wraplength=260,justify='left').pack(fill='x',pady=(8,0))
             deploy_text,deploy_style,deploy_state=self.hangar_deploy_state(aircraft)
+            ttk.Button(content,text=f'Redeploy after RTB: {"On" if aircraft.redeploy_on_rtb else "Off"}',
+                       style='GamePlay.TButton' if aircraft.redeploy_on_rtb else 'TButton',
+                       command=lambda n=slot:self.toggle_aircraft_redeploy(n)).pack(fill='x',pady=(8,0))
             ttk.Button(content,text=deploy_text,style=deploy_style,state=deploy_state,command=lambda n=slot:self.hangar_deploy(n)).pack(fill='x',pady=(8,0))
         # Wheel scrolling stays local to this panel and never zooms the map.
         def bind_wheel(widget):
@@ -1615,6 +1699,13 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             for child in widget.winfo_children():bind_wheel(child)
         bind_wheel(content)
         self.aircraft_canvas.yview_moveto(0)
+
+    def toggle_aircraft_redeploy(self,slot):
+        aircraft=self.aircraft.get(slot)
+        if aircraft is None or not aircraft.alive:return False
+        aircraft.set_redeploy_on_rtb(not aircraft.redeploy_on_rtb)
+        self.refresh_aircraft_menu();self.refresh_inspector();self.request_draw()
+        return True
 
     @property
     def power_capacity(self):
@@ -1749,6 +1840,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
 
     def inspected_name(self,unit):
         if unit is None:return 'Inspector'
+        if isinstance(unit,RWRSignal):return 'RWR Signal'
         if unit is self.airfield:return f'Airfield Level {unit.level}'
         if isinstance(unit,(Airfield,LogisticsHelicopter,Missile,Bomb,ICBM)):return unit.name
         if isinstance(unit,Aircraft):return self.combat.unit_name(unit)
@@ -1838,6 +1930,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
 
     def refresh_inspector(self):
         self.refresh_airfield_unlocks()
+        if isinstance(self.selected,RWRSignal):self.refresh_selected_rwr()
         unit=self.selected
         self.inspector_title.set(self.inspected_name(unit))
         self.inspector_heading.configure(foreground=self.unit_color(unit) if unit is not None else TEXT)
@@ -1845,7 +1938,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         layout_changed=layout!=getattr(self,'inspector_layout',None)
         if layout_changed:
             self.inspector_layout=layout
-            for widget in (self.aircraft_instruments,self.ground_instruments,self.icbm_instruments,self.projectile_instruments,self.helicopter_instruments,self.silo_instruments,self.ewr_controls,self.ewr_bearing_controls,self.pac3_controls,self.pac3_ammo,self.airfield_health,self.resupply_button,self.upgrade_panel,self.aircraft_controls,self.sam_controls,self.radar_controls,self.ciws_controls,self.silo_toggle_button,self.destroy_unit_button,self.player_silo_panel):widget.pack_forget()
+            for widget in (self.aircraft_instruments,self.ground_instruments,self.icbm_instruments,self.projectile_instruments,self.helicopter_instruments,self.silo_instruments,self.ewr_controls,self.ewr_bearing_controls,self.pac3_controls,self.pac3_ammo,self.airfield_health,self.rwr_confidence,self.resupply_button,self.upgrade_panel,self.aircraft_controls,self.sam_controls,self.radar_controls,self.ciws_controls,self.silo_toggle_button,self.destroy_unit_button,self.player_silo_panel):widget.pack_forget()
             self.engagement_controls.pack_forget();self.attack_button.pack_forget()
         self.refresh_follow_button()
         self.refresh_resources()
@@ -1873,6 +1966,10 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
                 button.configure(text=self.upgrade_button_text(kind,level),
                                  state='normal' if self.upgrade_available(kind,level) else 'disabled',
                              style='GameUpgradeReady.TButton' if self.upgrade_available(kind,level) else 'GameUpgrade.TButton')
+        elif isinstance(self.selected,RWRSignal):
+            self.rwr_confidence.update_signal(self.selected)
+            self.rwr_confidence.pack(fill='x',before=self.inspector_label)
+            self.inspector_text.set('')
         elif isinstance(self.selected,PlayerMissileSilo):
             self.refresh_player_silo(self.selected)
         elif isinstance(self.selected,ICBM):
@@ -1887,12 +1984,14 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             details=[]
             if a.defensive_missile is not None:details.append('Defensive · Break '+('right' if a.defensive_side>0 else 'left')+(f' · {a.defensive_speed:.0f} kt' if a.defensive_speed is not None else ''))
             if a.state=='servicing':details.append(f'Ground Crew: {"Working" if a.crew_active else "Waiting"} · {a.service_progress:.0%}')
-            if a.mode=='formation' and a.leader is not None:details.append(f'Leader: {self.aircraft_number(a.leader)} · {a.leader.kind}')
+            self.refresh_form_up_button()
             if a.refueling_from is not None:details.append(f'Refueling: KC-49 #{self.aircraft_number(a.refueling_from)}')
             if a.enemy and self.combat.reload_status(a,self.elapsed):details.append('Reloading: '+self.combat.reload_status(a,self.elapsed))
             if a.kind=='KC-49':details.append(f'Refuel Radius: {REFUEL_RADIUS_NM:g} NM')
             self.inspector_text.set('\n'.join(details))
             if not a.enemy and a.alive:self.aircraft_controls.pack(fill='x',pady=(6,0))
+            if not a.enemy and a.in_hangar:self.change_loadout_button.pack(fill='x',before=self.aircraft_deploy_row,pady=(0,4))
+            else:self.change_loadout_button.pack_forget()
             self.rtb_button.configure(text='Queued' if a.state=='queued' else 'Take' if a.state=='takeoff' else 'Deploy' if a.state in ('parked','servicing') else 'RTB',
                                       style='GamePause.TButton' if a.state=='queued' else 'GamePlay.TButton' if a.mode=='rtb' and a.state in ('rtb','approach','rollout') else 'TButton',
                                       state='disabled' if a.state=='servicing' or (a.state in ('parked','queued') and a.needs_service) else 'normal')
@@ -1961,7 +2060,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             self.airfield_health.pack(fill='x',before=self.inspector_label)
             if isinstance(self.selected,EnemyRunway):
                 r=self.selected
-                self.inspector_text.set('Runway destroyed · Waves stopped' if not r.alive else f'Band {r.band_number}\nWave {r.wave_number+1} in {max(0,math.ceil(r.next_wave-self.elapsed))}s\nAll runways must be destroyed to clear this band.')
+                self.inspector_text.set('Runway destroyed · Waves stopped' if not r.alive else f'Zone {r.band_number}\nWave {r.wave_number+1} in {max(0,math.ceil(r.next_wave-self.elapsed))}s\nAll runways must be destroyed to clear this zone.')
             else:self.inspector_text.set('Destroyed' if not self.selected.alive else 'Ground')
         elif isinstance(self.selected,Radar):
             if not self.selected.enemy or self.see_all:self.radar_controls.pack(fill='x')
@@ -2259,7 +2358,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
                 self.aircraft_button_health[slot]=(a,a.health)
             if slot not in self.map_aircraft_buttons:
                 button=tk.Canvas(self.map_aircraft_bar,width=width,height=height+22,background=BG,highlightthickness=0,cursor='hand2')
-                button.bind('<Button-1>',lambda event,n=slot:self.select_map_aircraft(n))
+                self.bind_aircraft_reordering(button,slot,'map')
                 button.bind('<Double-Button-1>',lambda event,n=slot:self.double_click_aircraft_button(n))
                 button.pack(side='left',padx=2);self.map_aircraft_buttons[slot]=button
             button=self.map_aircraft_buttons[slot];button.delete('all')
@@ -2382,6 +2481,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
                 if time.monotonic()-self.last_background_draw>=.25:self.request_draw()
 
     def double_click_aircraft_button(self,slot):
+        self.aircraft_drag=None
         self.select_map_aircraft(slot,follow=True)
         return 'break'
 
@@ -2401,6 +2501,21 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             self.select_map_aircraft(slot,follow=True)
             self.ignore_map_release=True;self.drag=None
         return 'break'
+
+    def refresh_form_up_button(self):
+        a=self.selected
+        following=isinstance(a,Aircraft) and a.mode=='formation' and a.leader is not None
+        self.form_up_button.configure(text=f'Leader: {self.aircraft_number(a.leader)} · {a.leader.kind}' if following else 'Form Up')
+
+    def command_form_up(self):
+        a=self.selected
+        if not isinstance(a,Aircraft) or a.enemy or not a.alive:return
+        if a.mode=='formation' and a.leader is not None:
+            self.cancel_movement()
+            a.fuel_rendezvous=False;a.fuel_resume=None
+            a.loiter((a.x,a.y))
+            self.refresh_inspector();self.request_draw()
+        else:self.start_movement('form_up')
 
     def finish_form_up(self,leader):
         if not isinstance(self.selected,Aircraft):return
@@ -2595,7 +2710,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.update_follow()
         if self.left_menu=='Unit List':self.refresh_unit_list()
         if self.draw_job is None:self.render_aircraft()
-        if isinstance(self.selected,(Airfield,Aircraft,Factory,Radar,SAMLauncher,CIWS,Missile,Bomb,LogisticsHelicopter)) and time.monotonic()-self.last_inspector_update>=.25:
+        if isinstance(self.selected,(Airfield,Aircraft,Factory,Radar,SAMLauncher,CIWS,Missile,Bomb,LogisticsHelicopter,RWRSignal)) and time.monotonic()-self.last_inspector_update>=.25:
             self.last_inspector_update=time.monotonic();self.refresh_inspector()
         self.schedule_tick()
 
@@ -2785,6 +2900,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             elif self.placing_sam:
                 self.place_sam(*self.world(event.x,event.y))
             else:
+                if self.select_rwr_at(event):self.drag=None;return
                 px,py=self.tower_pixel();f=self.building_factor()
                 for unit in reversed(self.visible_ground_units()):
                     if self.ground_dot_required(unit) and (abs(event.x-self.ground_pixel(unit)[0])<=7 and abs(event.y-self.ground_pixel(unit)[1])<=20 if isinstance(unit,(Airfield,EnemyRunway)) else math.dist((event.x,event.y),self.ground_pixel(unit))<=(12 if unit.category=='Radars' else 9)):
@@ -2982,7 +3098,6 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             ttk.Label(card,text=f'{reason}\n{action}',wraplength=220,justify='left',foreground=TEXT).pack(anchor='w',pady=3)
             row=ttk.Frame(card);row.pack(fill='x')
             ttk.Button(row,text='Refuel' if request['action']=='fuel' else 'RTB',command=lambda n=slot:self.answer_auto_prompt(n,True)).pack(side='left',fill='x',expand=True)
-            ttk.Button(row,text='RTB & Redeploy',command=lambda n=slot:self.answer_auto_prompt(n,True,redeploy=True)).pack(side='left',fill='x',expand=True,padx=(4,0))
             ttk.Button(row,text='Ignore',command=lambda n=slot:self.answer_auto_prompt(n,False)).pack(side='left',fill='x',expand=True,padx=(4,0))
         self.auto_prompt_panel.place(relx=1,x=-12,y=86,anchor='ne');self.auto_prompt_panel.lift()
 
@@ -3033,16 +3148,41 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.combat.events.clear()
         self.poll_progress()
 
-    def render_rwr(self):
-        c=self.canvas
+    def visible_rwr_estimates(self):
         for radar,x,y,quality in self.rwr.estimates.values():
             identified=id(radar) in (self.combat.identified_ground if isinstance(radar,SAAW) else self.combat.known_ground)
-            if not radar.radar_emitting or self.see_all or identified:continue
+            if radar.radar_emitting and not self.see_all and not identified:yield radar,x,y,quality
+
+    def refresh_selected_rwr(self):
+        selected=self.selected
+        if not isinstance(selected,RWRSignal):return
+        estimate=next((estimate for estimate in self.visible_rwr_estimates() if estimate[0] is selected.emitter),None)
+        if estimate is None:self.selected=None
+        else:_,selected.x,selected.y,selected.quality=estimate
+
+    def select_rwr_at(self,event):
+        candidates=[]
+        for radar,x,y,quality in self.visible_rwr_estimates():
+            px,py=self.pixel(x,y)
+            distance=math.hypot(event.x-px,event.y-py)
+            if distance<=14:candidates.append((distance,radar,x,y,quality))
+        if not candidates:return False
+        _,radar,x,y,quality=min(candidates,key=lambda candidate:candidate[0])
+        self.selected=RWRSignal(radar,x,y,quality);self.follow_enabled=False
+        self.show_left_menu('Inspector',cancel=False)
+        self.refresh_inspector();self.request_draw()
+        return True
+
+    def render_rwr(self):
+        c=self.canvas
+        for radar,x,y,quality in self.visible_rwr_estimates():
             px,py=self.pixel(x,y)
             if not -15<px<c.winfo_width()+15 or not -15<py<c.winfo_height()+15:continue
             c.create_text(px,py,text='?',fill='#ef6262',font=('Helvetica',14,'bold'),tags='game_aircraft')
             signal='Flak' if isinstance(radar,Flak) else 'SAAW' if isinstance(radar,SAAW) else 'EWR' if radar.early_warning else 'LR Radar' if radar.long_range else 'Radar'
             c.create_text(px,py+15,text=signal,anchor='n',fill='#ef6262',font=('Helvetica',9,'bold'),tags='game_aircraft')
+            if isinstance(self.selected,RWRSignal) and self.selected.emitter is radar:
+                c.create_oval(px-11,py-11,px+11,py+11,outline='#ffffff',tags='game_aircraft')
 
     def request_resupply(self):
         unit=self.selected
