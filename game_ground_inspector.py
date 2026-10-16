@@ -30,11 +30,12 @@ class GroundInspector(tk.Canvas):
         x,y=aircraft.position(self.elapsed) if hasattr(aircraft,'position') else (aircraft.x,aircraft.y)
         dx,dy=x-unit.x,y-unit.y
         if math.hypot(dx,dy)>radius:return None
-        if self.mode in ('radar','ewr','flak','saaw') and not unit.radar_detects(x,y):return None
+        if self.mode in ('radar','ewr','ciws','saaw') and not unit.radar_detects(x,y):return None
+        if self.mode=='flak' and not unit.visual_detects(x,y):return None
         return 135+dx/radius*96,191-dy/radius*96
 
     @property
-    def scope_range(self):return getattr(self.unit,'radar_range_nm',self.unit.range_nm)
+    def scope_range(self):return self.unit.visual_range_nm if self.mode=='flak' else getattr(self.unit,'radar_range_nm',self.unit.range_nm)
 
     def refresh_scope_contacts(self):
         if self.unit is None or self.mode=='sam':return False
@@ -123,7 +124,7 @@ class GroundInspector(tk.Canvas):
                     self.create_line(x,y,x,y+8,fill='#ffe66d' if i<unit.gun_ammo else '#303e50',width=2)
                 base_height=457+math.ceil(unit.gun_ammo_capacity/30)*13+12
         if self.mode!='sam':
-            title='SCOPE' if self.mode in ('ciws','pac3') else 'RADAR'
+            title='OPTICAL' if self.mode=='flak' else 'SCOPE' if self.mode=='pac3' else 'RADAR'
             self.create_rectangle(95,68,175,83,fill=BG,outline='')
             self.create_text(135,76,text=title,fill=TEXT,font=('Helvetica',10,'bold'))
         width=self.winfo_width();factor=width/270 if width>1 else 1.

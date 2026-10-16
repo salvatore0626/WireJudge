@@ -427,6 +427,11 @@ class CombatWorld:
         contact=self.contact(target,team)
         return airborne(target) and contact is not None and contact.kind=='datalink'
 
+    def has_optical_coverage(self,x,y,team=False):
+        observers=[a for a in self.current_aircraft if a.enemy==team]
+        observers.extend(self.enemy_sams if team else [*self.ciws,*self.ground_targets])
+        return any(getattr(unit,'visual_range_nm',0)>0 and hasattr(unit,'visual_detects') and unit.visual_detects(x,y) for unit in observers)
+
     def discover(self,aircraft,now):
         # Firing a weapon does not reveal its shooter; sensors must spot it.
         alive=[a for a in [*aircraft,*self.icbms] if a.alive]
@@ -439,7 +444,7 @@ class CombatWorld:
         for target in [*self.enemy_radars,*self.enemy_sams]:
             if target.alive and any(a.visual_detects(target.x,target.y) for a in [*friendly,*ground_observers]):
                 self.known_ground.add(id(target));self.identified_ground.add(id(target));self.visible_ground_contacts.add(id(target))
-        for target in [*self.radars,*[u for u in self.ciws if getattr(u,'shot_kind',None)=='flak']]:
+        for target in [*self.radars,*[u for u in self.ciws if getattr(u,'radar_emitting',False)]]:
             if target.alive and any(a.visual_detects(target.x,target.y) for a in hostile):self.identified_ground.add(id(target))
         for team,observers,targets in ((False,friendly,hostile),(True,hostile,friendly)):
             contacts=self.contacts[team]
@@ -453,7 +458,7 @@ class CombatWorld:
                     any(r.radar_detects(target.x,target.y) for r in [*(self.enemy_radars if team else self.radars),*[u for u in (self.enemy_sams if team else self.ciws) if hasattr(u,'radar_detects')]])
                     or any(a.kind!='AWACS' and a.radar_detects(target.x,target.y) for a in observers))
                 early_visual=False
-                visual=(not team and any(u.visual_detects(target.x,target.y) for u in ground_observers)) or early_visual or any(c.alive and math.hypot(target.x-c.x,target.y-c.y)<=getattr(c,'visual_range_nm',8.) for c in (self.ciws if not team else [u for u in self.enemy_sams if u.stats_key=='CIWS'])) or id(target) in reveals or any(a.visual_detects(target.x,target.y) or
+                visual=(not team and any(u.visual_detects(target.x,target.y) for u in ground_observers)) or early_visual or any(hasattr(c,'visual_detects') and c.visual_detects(target.x,target.y) for c in (self.ciws if not team else self.enemy_sams)) or id(target) in reveals or any(a.visual_detects(target.x,target.y) or
                            (a.kind=='AWACS' and airborne(target) and a.radar_detects(target.x,target.y)) for a in observers)
                 old=contacts.get(id(target))
                 if datalink or visual:
@@ -498,8 +503,8 @@ class CombatWorld:
             if not sam.enemy:self.weapon_totals['missiles']+=1
 
     def radar_site_support(self,target,team=False):
-        sites=self.enemy_radars if team else self.radars
-        return any(r.radar_detects(target.x,target.y) for r in sites)
+        sites=[*self.enemy_radars,*self.enemy_sams] if team else [*self.radars,*self.ciws]
+        return any(hasattr(r,'radar_detects') and r.radar_detects(target.x,target.y) for r in sites)
 
     @staticmethod
     def has_usable_weapon_for(a,target):
@@ -530,6 +535,7 @@ class CombatWorld:
         return target.category=='Radars' and any(a.weapon_enabled(kind) and a.missile_inventory.get(kind,0)>0 for kind in ANTI_RADAR_WEAPONS)
 
     def anti_radar_weapon(self,a,target,inventory=None):
+        if target.category!='Radars':return None
         inventory=a.missile_inventory if inventory is None else inventory
         distance=math.hypot(target.x-a.x,target.y-a.y)
         identified=id(target) in self.identified_ground
@@ -1078,6 +1084,7 @@ class CombatWorld:
                 if not target.alive or category not in gun.preferred_targets:continue
                 distance2=(x-gun.x)**2+(y-gun.y)**2
                 if not minimum2<=distance2<=maximum2:continue
+                if gun.stats_key=='CIWS' and not gun.radar_detects(x,y):continue
                 key=(distance2,order)
                 if best_key is None or key<best_key:best=row;best_key=key
             gun.attack_target=best[1] if best is not None else None
@@ -1127,10 +1134,11 @@ class CombatWorld:
     def advance_flak(self,now,dt):
         aircraft=[*self.friendly_aircraft,*self.enemies,*self.icbms]
         guns=[u for u in [*self.ciws,*self.enemy_sams] if getattr(u,'shot_kind',None)=='flak']
+        optical_targets={id(a) for a in aircraft if airborne(a) and self.has_optical_coverage(a.x,a.y,not a.enemy)} if guns else set()
         for gun in guns:
-            if not gun.alive or not gun.radar_emitting or gun.ammo<=0 or getattr(gun,'logistics_reload_remaining',0)>0:gun.attack_target=None;gun.shot_timer=0.;continue
+            if not gun.alive or gun.ammo<=0 or getattr(gun,'logistics_reload_remaining',0)>0:gun.attack_target=None;gun.shot_timer=0.;continue
             targets=[a for a in aircraft if airborne(a) and a.enemy!=gun.enemy and a.category in gun.preferred_targets
-                     and gun.radar_detects(a.x,a.y)
+                     and id(a) in optical_targets
                      and gun.min_engagement_range_nm<=math.hypot(a.x-gun.x,a.y-gun.y)<=gun.range_nm]
             gun.attack_target=min(targets,key=lambda a:math.hypot(a.x-gun.x,a.y-gun.y),default=None)
             if gun.attack_target is None:gun.shot_timer=0.;continue

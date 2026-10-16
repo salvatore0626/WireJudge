@@ -18,7 +18,7 @@ from game_campaign_comparison import CampaignComparison
 def label(key):
     special = {'cms': 'Countermeasures', 'icbm': 'ICBM', 'ground_units': 'Friendly ground units',
                'Power': 'Generator', 'objectives':'Objectives', 'tiers': 'Campaign zones', 'default_loadouts': 'Friendly default loadouts'}
-    return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize()).replace('band', 'zone').replace('Band', 'Zone')
+    return special.get(str(key), str(key) if any(c.isupper() for c in str(key)) else str(key).replace('_', ' ').capitalize()).replace('band', 'zone').replace('Band', 'Zone').replace('visual', 'optical').replace('Visual', 'Optical')
 
 
 def get_at(data, path):

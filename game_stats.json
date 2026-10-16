@@ -260,14 +260,14 @@
     "CIWS": {
       "health": 15,
       "range_nm": 8,
-      "visual_range_nm": 9,
       "ammo": 500,
       "power": 1,
       "price": 1250,
       "rounds_per_second": 5,
       "reload_seconds": 200,
       "min_engagement_range_nm": 0,
-      "description": "Provides Point defences without the need for radar coverage."
+      "description": "Provides Point defence against aircraft, missiles, bombs, and ICBMS. Has a short range radar built in and must be on to work.",
+      "radar_range_nm": 8.2
     },
     "Flak": {
       "health": 20,
@@ -278,8 +278,8 @@
       "shells_per_second": 0.5,
       "reload_seconds": 250,
       "min_engagement_range_nm": 4,
-      "radar_range_nm": 15,
-      "description": "Provides Point defences without the need for radar coverage against Missiles, Bombs, Aircraft, Drones and ICBMS."
+      "description": "Provides Point defences without the need for radar coverage against Missiles, Bombs, Aircraft, Drones and ICBMS.",
+      "visual_range_nm": 15
     },
     "PAC-3": {
       "health": 50,
@@ -765,12 +765,12 @@
     "CIWS": {
       "health": 15,
       "range_nm": 4,
-      "visual_range_nm": 8,
       "ammo": 300,
       "rounds_per_second": 8,
       "reload_seconds": 400,
       "min_engagement_range_nm": 0,
-      "description": ""
+      "description": "",
+      "radar_range_nm": 8
     },
     "Flak": {
       "health": 20,
@@ -779,8 +779,8 @@
       "shells_per_second": 0.5,
       "reload_seconds": 1200,
       "min_engagement_range_nm": 1.5,
-      "radar_range_nm": 24,
-      "description": ""
+      "description": "",
+      "visual_range_nm": 24
     },
     "Factory": {
       "health": 15,

@@ -16,6 +16,7 @@ from game_campaign import Campaign, EnemyRunway
 from game_results import ResultBoard, results_header
 from game_start import StartScene
 from game_fullscreen import GameFullscreen
+from game_grid import grid_image
 from game_logistics import logistics_reload_multiplier, LogisticsFleet, LogisticsHelicopter, LOGISTICS_LEVELS, LOGISTICS_UPGRADE_COSTS, helipad_position
 from game_audio import GameAudio, kill_reward_gain
 from game_progress import ProgressUI
@@ -27,7 +28,7 @@ from matplotlib.markers import MarkerStyle
 from matplotlib.font_manager import findfont
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-ZOOM_WIDTHS_NM = tuple(sorted({w for w in (5,10,15,25,50,75,100,150,250,400,500,750,1500,2500,5000,10000,20000) if w<=2*STATS['world']['radius_nm']} | {2*STATS['world']['radius_nm']}))
+ZOOM_WIDTHS_NM = tuple(sorted({w for w in (5,10,15,25,50,75,100,150,250,400,500,750,1500,2500) if w<=min(2500,2*STATS['world']['radius_nm'])} | {min(2500,2*STATS['world']['radius_nm'])}))
 FEET_PER_NM = 6076.115485564304
 BUILD_RADIUS_NM = STATS['world']['build_radius_nm']
 SAM_COST = STATS['ground_units']['SAM']['price']
@@ -382,6 +383,8 @@ def upgrade_cost(level):
 
 @dataclass
 class CIWS(Building):
+    category: str = 'Radars'
+    enabled: bool = True
     def __post_init__(self):
         super().__post_init__()
         for key in ('range_nm','visual_range_nm','power','ammo','ammo_capacity'):
@@ -406,10 +409,22 @@ class CIWS(Building):
     @property
     def max_health(self):return self.stats['health']
 
+    @property
+    def radar_range_nm(self):return self.stats.get('radar_range_nm',0)
+
+    @property
+    def radar_emitting(self):return self.alive and self.enabled and self.radar_range_nm>0
+
+    def radar_detects(self,x,y):
+        return self.radar_emitting and math.hypot(x-self.x,y-self.y)<=self.radar_range_nm
+
+    def visual_detects(self,x,y):
+        return self.alive and self.visual_range_nm>0 and math.hypot(x-self.x,y-self.y)<=self.visual_range_nm
+
 
 @dataclass
 class Flak(CIWS):
-    category: str = 'Radars'
+    category: str = 'Ground'
     power: int = None
     range_nm: float = None
     visual_range_nm: float = None
@@ -421,13 +436,13 @@ class Flak(CIWS):
     preferred_targets: set = field(default_factory=lambda: {'Fighters','Bombers','Suicide Drones','ICBMs'})
 
     @property
-    def radar_range_nm(self):return self.stats['radar_range_nm']
+    def radar_range_nm(self):return 0.
 
     def radar_detects(self,x,y):
-        return self.radar_emitting and math.hypot(x-self.x,y-self.y)<=self.radar_range_nm
+        return False
 
     @property
-    def radar_emitting(self):return self.alive and self.enabled
+    def radar_emitting(self):return False
 
     @property
     def max_health(self):return self.stats['health']
@@ -441,6 +456,8 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.logistics=LogisticsFleet();self.logistics.sync(LOGISTICS_LEVELS[self.airfield.logistics_level-1],self.airfield)
         self.center = [self.airfield.x,self.airfield.y]
         self.view_width = 10.
+        self.grid_opacity=.30;self.grid_opacity_job=None
+        self.grid_photo=None;self.grid_photo_key=None;self.grid_labels=[]
         self.playing = False
         self.run_started=False;self.run_result=None
         self.show_bands=STATS['campaign']['show_bands']
@@ -483,6 +500,8 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.sam_coverage_key=None;self.sam_coverage_paths=[];self.sam_coverage_items=[];self.selected_sam_coverage_items=[];self.enemy_sam_coverage_items=[]
         self.visual_overlay=True;self.visual_coverage_items=[]
         self.visual_coverage_key=None;self.visual_coverage_paths=[];self.visual_coverage_updated=-1.
+        self.selected_range_items={'line':[],'oval':[]};self.selected_range_key=None
+        self.placement_radar_items=[];self.radar_preview_job=None
         self.ping_sweep_time=None
         self.see_all=False
         self.last_shortcut=(None,0.)
@@ -657,7 +676,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         unit_scroll=ttk.Scrollbar(self.unit_list_panel,orient='vertical',command=self.unit_tree.yview)
         unit_scroll.pack(side='right',fill='y');self.unit_tree.pack(fill='both',expand=True)
         self.unit_tree.configure(yscrollcommand=unit_scroll.set)
-        for key,label in (('friendly','Friendly Units'),('datalink','Enemy · Data Link'),('visual','Enemy · Visual')):
+        for key,label in (('friendly','Friendly Units'),('datalink','Enemy · Data Link'),('visual','Enemy · Optical')):
             self.unit_tree.insert('', 'end',iid=key,text=label,open=True)
         self.unit_list_signature=None;self.unit_list_units={}
         self.unit_tree.bind('<<TreeviewSelect>>',self.select_list_unit)
@@ -848,7 +867,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.sam_coverage_button.pack(side='left',padx=4)
         self.point_defence_button=ttk.Button(controls,text='Point Defence',style='GamePointDefence.TButton',command=self.toggle_point_defence)
         self.point_defence_button.pack(side='left',padx=4)
-        self.visual_coverage_button=ttk.Button(controls,text='Visual',style='GamePlay.TButton',command=self.toggle_visual_coverage)
+        self.visual_coverage_button=ttk.Button(controls,text='Optical',style='GamePlay.TButton',command=self.toggle_visual_coverage)
         self.visual_coverage_button.pack(side='left',padx=4)
         ttk.Button(navigation,text='-',width=3,command=lambda:self.zoom(1.5)).pack(side='left',padx=2)
         self.home_icon=tk.PhotoImage(master=self,width=22,height=20)
@@ -901,6 +920,14 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.mute_button.pack(side='right')
         self.fullscreen_button=ttk.Button(self.map_controls,text='Fullscreen',width=14,style='GameMute.TButton',command=self.fullscreen.toggle)
         self.fullscreen_button.pack(side='right',padx=(0,6))
+        grid_controls=ttk.Frame(self.map_controls);grid_controls.pack(side='right',padx=(0,10))
+        ttk.Label(grid_controls,text='Grid').pack(side='left',padx=(0,4))
+        self.grid_opacity_var=tk.DoubleVar(value=30.)
+        self.grid_opacity_slider=ttk.Scale(grid_controls,from_=0,to=100,length=90,
+                                         variable=self.grid_opacity_var,command=self.set_grid_opacity)
+        self.grid_opacity_slider.pack(side='left')
+        self.grid_opacity_text=tk.StringVar(value='30%')
+        ttk.Label(grid_controls,textvariable=self.grid_opacity_text,width=4).pack(side='left',padx=(4,0))
         self.canvas.bind('<Configure>',self.resized)
         self.canvas.bind('<Button-1>',self.press)
         self.canvas.bind('<B1-Motion>',self.motion)
@@ -1806,9 +1833,9 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         return True
 
     def toggle_radar_power(self):
-        if not isinstance(self.selected,(Radar,Flak)) or not self.selected.alive:return
+        if not isinstance(self.selected,(Radar,CIWS)) or isinstance(self.selected,Flak) or not self.selected.alive:return
         self.selected.enabled=not self.selected.enabled
-        if isinstance(self.selected,Flak) and not self.selected.enabled:self.selected.attack_target=None;self.selected.shot_timer=0.
+        if isinstance(self.selected,CIWS) and not self.selected.enabled:self.selected.attack_target=None;self.selected.shot_timer=0.
         self.coverage_key=None
         self.refresh_inspector();self.request_draw()
 
@@ -1858,7 +1885,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         visual=getattr(unit,'visual_range_nm',stats.get('visual_range_nm',0))
         engagement=getattr(unit,'range_nm',stats.get('range_nm',0)) if isinstance(unit,(SAMLauncher,CIWS)) else 0
         if radar>0:lines.append(f'Radar Range: {radar:g} NM')
-        if visual>0:lines.append(f'Visual Range: {visual:g} NM')
+        if visual>0:lines.append(f'Optical Range: {visual:g} NM')
         minimum=getattr(unit,'min_engagement_range_nm',0)
         if engagement>0:
             distance=f'{minimum:g}–{engagement:g}' if minimum>0 else f'{engagement:g}'
@@ -2020,7 +2047,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             self.inspector_text.set('')
         elif isinstance(self.selected,CIWS):
             self.refresh_ground_instruments(self.selected,'flak' if isinstance(self.selected,Flak) else 'ciws')
-            if isinstance(self.selected,Flak):
+            if not isinstance(self.selected,Flak):
                 self.ewr_track_button.pack_forget()
                 self.radar_toggle_button.configure(text='Radar On' if self.selected.enabled else 'Radar Off',style='GamePlay.TButton' if self.selected.enabled else 'TButton',state='normal' if self.selected.alive else 'disabled')
                 if not self.selected.enemy or self.see_all:self.radar_controls.pack(fill='x')
@@ -2339,11 +2366,11 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
 
     def on_datalink(self,x,y,target=None):
         if target is not None and not (isinstance(target,Aircraft) and target.sensors_active):return False
-        return (any(r.radar_detects(x,y) for r in self.radars)
+        return (any(r.radar_detects(x,y) for r in [*self.radars,*self.ciws])
                 or any(a.kind!='AWACS' and a.radar_detects(x,y) for a in self.aircraft.values()))
 
     def visible_track(self,x,y):
-        return self.airfield.visual_detects(x,y) or self.on_datalink(x,y) or any(a.visual_detects(x,y) or (a.kind=='AWACS' and a.radar_detects(x,y)) for a in self.aircraft.values())
+        return self.airfield.visual_detects(x,y) or any(c.visual_detects(x,y) for c in self.ciws) or self.on_datalink(x,y) or any(a.visual_detects(x,y) or (a.kind=='AWACS' and a.radar_detects(x,y)) for a in self.aircraft.values())
 
     def refresh_map_aircraft_buttons(self):
         now=time.monotonic()
@@ -2660,10 +2687,16 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
 
     def hover(self,event):
         if self.placing_player_silo or self.silo_target_picker is not None or self.placing_sam or self.placing_radar or self.placing_ciws or self.movement_mode:
-            self.pointer=self.world(event.x,event.y);self.request_draw()
+            self.pointer=self.world(event.x,event.y)
+            if self.placing_radar:
+                if self.radar_preview_job is None:self.radar_preview_job=self.after(33,self.refresh_radar_placement_preview)
+            else:self.request_draw()
 
     def leave(self,event):
-        if self.pointer is not None:self.pointer=None;self.request_draw()
+        if self.pointer is not None:
+            self.pointer=None
+            if self.placing_radar:self.refresh_radar_placement_preview()
+            else:self.request_draw()
 
     def view_width_nm(self):
         return self.view_width
@@ -2749,7 +2782,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.refresh_campaign()
         self.process_game_events()
         self.refresh_auto_prompts()
-        if self.rwr.update(self.aircraft.values(),[*self.combat.enemy_radars,*[s for s in self.combat.enemy_sams if isinstance(s,(SAAW,Flak))]],self.elapsed):self.request_draw()
+        if self.rwr.update(self.aircraft.values(),[*self.combat.enemy_radars,*[s for s in self.combat.enemy_sams if getattr(s,'radar_emitting',False)]],self.elapsed):self.request_draw()
         contacts=sum(isinstance(contact.target,Aircraft) and contact.target.alive for contact in self.combat.contacts[False].values())
         self.contacts_text.set(f"Contacts: {contacts}")
         self.update_contacts_hud()
@@ -2773,7 +2806,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         if self.key_binding:self.winfo_toplevel().unbind('<KeyPress>',self.key_binding)
         if self.key_release_binding:self.winfo_toplevel().unbind('<KeyRelease>',self.key_release_binding)
         for job in self.shortcut_release_jobs.values():self.after_cancel(job)
-        for name in ('job','draw_job','aircraft_status_job','progress_notice_job'):
+        for name in ('job','draw_job','aircraft_status_job','progress_notice_job','grid_opacity_job','radar_preview_job'):
             job=getattr(self,name)
             if job is not None:self.after_cancel(job);setattr(self,name,None)
 
@@ -2813,7 +2846,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
     def full_map(self):
         self.follow_enabled=False;self.refresh_follow_button()
         self.center=[self.airfield.x,self.airfield.y]
-        self.set_view_width(20000)
+        self.set_view_width(ZOOM_WIDTHS_NM[-1])
 
     def zoom(self,factor,anchor=None):
         index=ZOOM_WIDTHS_NM.index(self.view_width)
@@ -3077,6 +3110,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             weapon.player_spotted=True;return True
         point=weapon.position(self.elapsed) if hasattr(weapon,'position') else (weapon.x,weapon.y)
         visual=(self.airfield.visual_detects(*point) or any(a.visual_detects(*point) for a in self.aircraft.values())
+                or any(c.radar_detects(*point) for c in self.ciws)
                 or any(c.alive and math.dist((c.x,c.y),point)<=c.visual_range_nm for c in self.ciws))
         if spotted or visual:weapon.player_spotted=True
         return getattr(weapon,'player_spotted',False)
@@ -3179,7 +3213,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             px,py=self.pixel(x,y)
             if not -15<px<c.winfo_width()+15 or not -15<py<c.winfo_height()+15:continue
             c.create_text(px,py,text='?',fill='#ef6262',font=('Helvetica',14,'bold'),tags='game_aircraft')
-            signal='Flak' if isinstance(radar,Flak) else 'SAAW' if isinstance(radar,SAAW) else 'EWR' if radar.early_warning else 'LR Radar' if radar.long_range else 'Radar'
+            signal='CIWS' if isinstance(radar,CIWS) else 'SAAW' if isinstance(radar,SAAW) else 'EWR' if radar.early_warning else 'LR Radar' if radar.long_range else 'Radar'
             c.create_text(px,py+15,text=signal,anchor='n',fill='#ef6262',font=('Helvetica',9,'bold'),tags='game_aircraft')
             if isinstance(self.selected,RWRSignal) and self.selected.emitter is radar:
                 c.create_oval(px-11,py-11,px+11,py+11,outline='#ffffff',tags='game_aircraft')
@@ -3703,11 +3737,13 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         color=('#6cd9af' if not self.placement_error(radar) else '#ff7777') if ghost else '#ef6262' if radar.enemy else '#6cd9af'
         if not radar.alive:color='#586070'
         if not ghost and not radar.enabled:color=self.muted_map_color(color,.75)
-        if radar.long_range:self.draw_base_legs(x,y,f,color,'radar_icon')
-        c.create_oval(x-15*f,y-15*f,x+15*f,y+15*f,outline=color,width=2,dash=(4,3) if ghost else (),tags='radar_icon')
+        icon_tag='radar_preview' if ghost else 'radar_icon'
+        sweep_tag='radar_preview' if ghost else 'radar_sweep'
+        if radar.long_range:self.draw_base_legs(x,y,f,color,icon_tag)
+        c.create_oval(x-15*f,y-15*f,x+15*f,y+15*f,outline=color,width=2,dash=(4,3) if ghost else (),tags=icon_tag)
         if radar.early_warning:
-            item=c.create_line(*self.ewr_dish_points(radar,x,y),fill=color,width=2,tags='radar_sweep')
-        else:item=c.create_polygon(self.radar_d_points(x,y,None if ghost else radar.sweep_angle),fill='',outline=color,width=2,tags='radar_sweep')
+            item=c.create_line(*self.ewr_dish_points(radar,x,y),fill=color,width=2,tags=sweep_tag)
+        else:item=c.create_polygon(self.radar_d_points(x,y,None if ghost else radar.sweep_angle),fill='',outline=color,width=2,tags=sweep_tag)
         if not ghost:self.radar_sweeps[id(radar)]=(item,x,y)
         if self.selected is radar:c.create_oval(x-20*f,y-20*f,x+20*f,y+20*f,outline='#69b7ff',dash=(4,3))
 
@@ -3822,12 +3858,23 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
     def radar_footprints(self):
         # The airfield and visual detection areas are not radar sources.
         sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.radars if r.radar_emitting]
-        sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.ciws if isinstance(g,Flak) and g.radar_emitting)
+        sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.ciws if g.radar_emitting)
         sources.extend((a,(a.x,a.y,a.radar_range_nm,a.heading,a.radar_angle_deg))
                        for a in self.aircraft.values() if a.sensors_active and a.radar_range_nm and a.kind!='AWACS')
-        if self.placing_radar and self.pointer:
-            sources.append((None,(*self.pointer,Radar(0,0,0,long_range=self.placing_lr,early_warning=self.placing_ewr).range_nm,0.,Radar(0,0,0,early_warning=self.placing_ewr).radar_angle_deg)))
         return sources
+
+    def refresh_radar_placement_preview(self):
+        job=self.radar_preview_job
+        if job is not None:self.after_cancel(job);self.radar_preview_job=None
+        c=self.canvas;c.delete('radar_preview')
+        paths=[]
+        if self.placing_radar and self.pointer:
+            radar=Radar(0,*self.pointer,long_range=self.placing_lr,early_warning=self.placing_ewr)
+            self.draw_radar(radar,ghost=True)
+            c.addtag_withtag('map_world','radar_preview')
+            paths=range_paths(radar.x,radar.y,radar.range_nm,radar.bearing,radar.radar_angle_deg,radar.min_engagement_range_nm)
+        self.update_coverage_items(self.placement_radar_items,paths,'#6cd9af',(6,5),'placement_radar_coverage')
+        self.apply_map_layers()
 
     def update_coverage_items(self,items,paths,color,dash,tag='radar_coverage'):
         c=self.canvas
@@ -3845,23 +3892,40 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
 
     def draw_selected_range_path(self,polygon,color,dash=(),dotted=False):
         c=self.canvas;points=[*polygon,polygon[0]]
+        shapes=getattr(self,'selected_range_shapes',None)
+        def emit(kind,coords):
+            if shapes is not None:shapes.append((kind,tuple(coords),color,dash))
+            elif kind=='line':c.create_line(*coords,fill=color,dash=dash,width=1.3,tags=('selected_unit_coverage','map_world'))
+            else:c.create_oval(*coords,fill=color,outline='',tags=('selected_unit_coverage','map_world'))
         if not dotted:
-            c.create_line(*[v for point in points for v in self.pixel(*point)],fill=color,dash=dash,width=1.3,tags=('selected_unit_coverage','map_world'))
+            emit('line',[v for point in points for v in self.pixel(*point)])
             return
         spacing=c.winfo_fpixels('1i')*.1875;travelled=0.
+        width,height=c.winfo_width(),c.winfo_height()
         for start,end in zip(points,points[1:]):
             x,y=self.pixel(*start);ex,ey=self.pixel(*end)
             dx,dy=ex-x,ey-y;length=math.hypot(dx,dy)
+            offset=travelled;travelled+=length
             if length<1e-9:continue
-            for n in range(math.ceil(travelled/spacing),math.ceil((travelled+length)/spacing)):
-                f=(n*spacing-travelled)/length;px=x+dx*f;py=y+dy*f
-                c.create_oval(px-1.35,py-1.35,px+1.35,py+1.35,fill=color,outline='',tags=('selected_unit_coverage','map_world'))
-            travelled+=length
+            # Clip before sampling, retaining the original circumference phase.
+            lo,hi=0.,1.
+            for p,q in ((-dx,x+2),(dx,width+2-x),(-dy,y+2),(dy,height+2-y)):
+                if abs(p)<1e-12:
+                    if q<0:hi=-1;break
+                elif p<0:lo=max(lo,q/p)
+                else:hi=min(hi,q/p)
+            if hi<lo:continue
+            for n in range(math.ceil((offset+lo*length)/spacing),math.ceil((offset+hi*length)/spacing)):
+                f=(n*spacing-offset)/length;px=x+dx*f;py=y+dy*f
+                emit('oval',(px-1.35,py-1.35,px+1.35,py+1.35))
 
     def draw_selected_friendly_coverage(self):
-        c=self.canvas;c.delete('selected_unit_coverage')
+        c=self.canvas
         unit=self.selected
-        if unit is None or not getattr(unit,'alive',False) or getattr(unit,'enemy',False):return
+        if not isinstance(unit,(Airfield,Aircraft,Radar,SAMLauncher,CIWS)) or not unit.alive or unit.enemy:
+            if any(getattr(self,'selected_range_items',{}).values()):c.delete('selected_unit_coverage')
+            self.selected_range_items={'line':[],'oval':[]};self.selected_range_key=None
+            return
         # Draw this unit's complete boundary independently of merged overlays.
         circles=[];radar=None
         if isinstance(unit,Airfield):circles.append((unit.visual_range_nm,'#6cd9af',(),True))
@@ -3876,14 +3940,35 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             if unit.min_engagement_range_nm:circles.append((unit.min_engagement_range_nm,SAM_COLOR,(),False))
         elif isinstance(unit,CIWS):
             circles.extend(((unit.visual_range_nm,'#6cd9af',(),True),(unit.range_nm,'#ffe66d',(),False)))
-            if isinstance(unit,Flak) and unit.radar_emitting:radar=(unit.radar_range_nm,0.,360.)
+            if unit.radar_emitting:radar=(unit.radar_range_nm,0.,360.)
             if unit.min_engagement_range_nm:circles.append((unit.min_engagement_range_nm,'#ffe66d',(),False))
+        key=(id(unit),unit.x,unit.y,tuple(circles),radar,
+             c.winfo_width(),c.winfo_height(),c.winfo_fpixels('1i'),self.view_width,tuple(self.center))
+        if key==getattr(self,'selected_range_key',None):
+            c.tag_raise('selected_unit_coverage');return
+        self.selected_range_shapes=[]
         for radius,color,dash,dotted in circles:
             if radius:self.draw_selected_range_path(footprint(unit.x,unit.y,radius),color,dash,dotted)
         if radar:
             radius,bearing,angle=radar
             for path in range_paths(unit.x,unit.y,radius,bearing,angle,unit.min_engagement_range_nm if isinstance(unit,(PAC3,Radar)) else 0.):
                 self.draw_selected_range_path(path[:-1],SAM_COLOR if isinstance(unit,PAC3) else '#6cd9af',() if isinstance(unit,PAC3) else (6,5))
+        pools=getattr(self,'selected_range_items',{'line':[],'oval':[]})
+        counts={'line':0,'oval':0}
+        for kind,coords,color,dash in self.selected_range_shapes:
+            index=counts[kind];counts[kind]+=1;pool=pools[kind]
+            options={'fill':color,'dash':dash,'width':1.3} if kind=='line' else {'fill':color,'outline':''}
+            if index==len(pool):
+                item=getattr(c,'create_'+kind)(*coords,**options,tags=('selected_unit_coverage','map_world'))
+                pool.append((item,coords,color,dash))
+            else:
+                item,old_coords,old_color,old_dash=pool[index]
+                if coords!=old_coords:c.coords(item,*coords)
+                if color!=old_color or dash!=old_dash:c.itemconfigure(item,**options)
+                pool[index]=(item,coords,color,dash)
+        for kind,pool in pools.items():
+            while len(pool)>counts[kind]:c.delete(pool.pop()[0])
+        self.selected_range_items=pools;self.selected_range_key=key;self.selected_range_shapes=None
         c.tag_raise('selected_unit_coverage')
 
     def draw_radar_coverage(self,force=False):
@@ -3891,16 +3976,20 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         enemy_sources=[]
         if self.radar_overlay and self.see_all:
             enemy_sources=[(r,(r.x,r.y,r.range_nm,r.bearing if r.early_warning else 0.,r.radar_angle_deg)) for r in self.combat.enemy_radars if r.radar_emitting]
-            enemy_sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.combat.enemy_sams if isinstance(g,(Flak,SAAW)) and g.radar_emitting)
+            enemy_sources.extend((g,(g.x,g.y,g.radar_range_nm,0.,360.)) for g in self.combat.enemy_sams if getattr(g,'radar_emitting',False))
             enemy_sources.extend((a,(a.x,a.y,a.radar_range_nm,a.heading,a.radar_angle_deg)) for a in self.combat.enemies if a.sensors_active and a.radar_range_nm and a.kind!='AWACS')
         sources=[(source,spec) for source,spec in sources if self.coverage_in_view(spec)]
         enemy_sources=[(source,spec) for source,spec in enemy_sources if self.coverage_in_view(spec)]
         key=(tuple(spec for source,spec in sources),tuple(spec for source,spec in enemy_sources))
+        source_ids=(tuple(id(source) for source,spec in sources),tuple(id(source) for source,spec in enemy_sources))
         now=time.monotonic()
-        if key!=self.coverage_key and (force or bool(key[1])!=bool(getattr(self,'radar_enemy_specs',None)) or now-self.coverage_updated>=STATS['world']['coverage_refresh_seconds']):
+        if key!=self.coverage_key and (self.coverage_key is None or force or not self.playing
+            or source_ids!=getattr(self,'radar_source_ids',None)
+            or now-self.coverage_updated>=STATS['world']['coverage_refresh_seconds']):
             self.coverage_paths=coverage_outline([(*spec,source.min_engagement_range_nm if isinstance(source,Radar) else 0.) for source,spec in sources])
             self.enemy_radar_coverage_paths=coverage_outline([(*spec,source.min_engagement_range_nm if isinstance(source,Radar) else 0.) for source,spec in enemy_sources])
             self.coverage_key=key;self.radar_enemy_specs=key[1];self.coverage_updated=now
+            self.radar_source_ids=source_ids
         self.update_coverage_items(self.coverage_items,self.coverage_paths if sources else [],'#6cd9af',(6,5))
         self.update_coverage_items(self.enemy_radar_coverage_items,getattr(self,'enemy_radar_coverage_paths',[]) if enemy_sources else [],'#ef6262',(6,5),'enemy_radar_coverage')
         selected=[path for source,spec in [*sources,*enemy_sources] if source is self.selected and source is not None and getattr(source,'enemy',False) for path in range_paths(*spec,source.min_engagement_range_nm if isinstance(source,Radar) else 0.)]
@@ -4000,6 +4089,37 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             selected=range_paths(*spec(unit))
         self.update_coverage_items(self.selected_sam_coverage_items,selected,'#ef6262' if getattr(unit,'enemy',False) else SAM_COLOR,(),'selected_sam_coverage')
 
+    def set_grid_opacity(self,value):
+        opacity=round(max(0.,min(100.,float(value))))/100.
+        if opacity==self.grid_opacity:return
+        self.grid_opacity=opacity
+        self.grid_opacity_text.set(f'{round(opacity*100)}%')
+        if self.grid_opacity_job is None:
+            self.grid_opacity_job=self.after(40,self.update_grid_opacity)
+
+    def update_grid_opacity(self):
+        self.grid_opacity_job=None
+        self.draw_map_grid()
+
+    def draw_map_grid(self):
+        c=self.canvas;width=max(1,c.winfo_width());height=max(1,c.winfo_height())
+        key=(width,height,tuple(self.center),self.view_width,self.grid_opacity)
+        if key!=self.grid_photo_key:
+            image,self.grid_labels=grid_image(width,height,self.center,self.view_width,self.grid_opacity,BG,MUTED)
+            self.grid_photo=ImageTk.PhotoImage(image,master=c)
+            self.grid_photo_key=key
+        tags=('map_grid','map_grid_image','map_background','map_world')
+        if c.find_withtag('map_grid_image'):
+            c.itemconfigure('map_grid_image',image=self.grid_photo)
+            c.coords('map_grid_image',0,0)
+        else:c.create_image(0,0,image=self.grid_photo,anchor='nw',tags=tags)
+        c.delete('map_grid_labels')
+        color=self.muted_map_color(MUTED,self.grid_opacity*.75)
+        for x,y,value in self.grid_labels:
+            c.create_text(x,y,text=f'{value:g}',anchor='w',fill=color,font=('Helvetica',8),
+                          tags=('map_grid','map_grid_labels','map_background','map_world'))
+        c.tag_lower('map_grid')
+
     def draw(self):
         self.draw_job=None
         c=self.canvas;c.delete('all')
@@ -4008,23 +4128,11 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.sam_coverage_items=[];self.selected_sam_coverage_items=[];self.enemy_sam_coverage_items=[]
         self.point_defence_items=[];self.enemy_point_defence_items=[];self.selected_point_defence_items=[];self.placement_point_defence_items=[]
         self.visual_coverage_items=[]
+        self.placement_radar_items=[]
+        self.selected_range_items={'line':[],'oval':[]};self.selected_range_key=None
         self.radar_sweeps={};self.sam_glyphs={};self.ciws_glyphs={}
         width,height=c.winfo_width(),c.winfo_height()
-        step=100 if self.view_width>400 else 50 if self.view_width>150 else 25 if self.view_width>50 else 5 if self.view_width>15 else 1
-        step*=2
-        low=self.world(0,height);high=self.world(width,0)
-        for axis in (0,1):
-            lo=low[axis];hi=high[axis]
-            for i in range(math.ceil(lo/step),math.floor(hi/step)+1):
-                v=i*step
-                if axis==0:
-                    px,_=self.pixel(v,0)
-                    c.create_line(px,0,px,height,fill='#2c3c51')
-                    c.create_text(px+3,height-10,text=f'{v:g}',anchor='w',fill=MUTED,font=('Helvetica',8))
-                else:
-                    _,py=self.pixel(0,v)
-                    c.create_line(0,py,width,py,fill='#2c3c51')
-                    c.create_text(7,py-5,text=f'{v:g}',anchor='w',fill=MUTED,font=('Helvetica',8))
+        self.draw_map_grid()
         self.draw_bands()
         if self.placing_player_silo or self.placing_radar or self.placing_sam or self.placing_ciws:
             cx,cy=self.pixel(self.airfield.x,self.airfield.y);radius=BUILD_RADIUS_NM*self.scale()
@@ -4075,7 +4183,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
             if self.see_all or id(radar) in self.combat.known_ground:self.draw_radar(radar)
         for sam in self.combat.enemy_sams:
             if self.see_all or id(sam) in self.combat.known_ground:self.draw_sam(sam)
-        if self.placing_radar and self.pointer:self.draw_radar(Radar(0,*self.pointer,long_range=self.placing_lr,early_warning=self.placing_ewr),ghost=True)
+        self.refresh_radar_placement_preview()
         if self.placing_sam and self.pointer:self.draw_sam(self.sam_preview(*self.pointer),ghost=True)
         if not self.ground_dot_required(self.airfield):
             c.create_text(px+12,py-runway_pixels/2-12,text=self.airfield.name,anchor='w',fill=TEXT,font=('Helvetica',10,'bold'),tags='airfield_icons')
@@ -4083,7 +4191,7 @@ class GameMapPage(ProgressUI,PlayerSiloUI,ttk.Frame):
         self.update_contacts_hud()
         c.create_text(width-8,height-12,text='NM',anchor='e',fill=MUTED,font=('Helvetica',9),tags='map_hud')
         c.addtag_withtag('map_world','all');c.dtag('map_hud','map_world')
-        self.draw_radar_coverage(force=True)
+        self.draw_radar_coverage()
         self.render_aircraft()
         self.map_aircraft_bar.lift()
         self.refresh_auto_prompts()

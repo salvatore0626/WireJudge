@@ -518,8 +518,11 @@ def migrate_stats(data):
             if 'HARM' in counts:counts['AGM-88']=counts.pop('HARM')
     for group in ('ground_units','enemy_ground_units'):
         flak=data.get(group,{}).get('Flak',{})
-        if 'visual_range_nm' in flak:
-            flak.setdefault('radar_range_nm',flak.pop('visual_range_nm'))
+        if 'radar_range_nm' in flak:
+            flak.setdefault('visual_range_nm',flak.pop('radar_range_nm'))
+        ciws=data.get(group,{}).get('CIWS',{})
+        if 'visual_range_nm' in ciws:
+            ciws.setdefault('radar_range_nm',ciws.pop('visual_range_nm'))
     saaw=data.get('enemy_ground_units',{}).get('SAAW')
     if saaw is not None:saaw.setdefault('radar_range_nm',saaw.get('range_nm',8))
     if rebalance:apply_balance_update(data)
@@ -672,9 +675,9 @@ SCHEMA['campaign']={key:'positive' for key in ('band_width_nm','unit_separation_
 SCHEMA['campaign'].update({'safe_radius_nm':'number','aircraft_clearance_nm':'number','placement_attempts':'integer','random_seed':'integer','runway_health_per_band':'number','core_factory_min_radius_nm':'number','random_factories_start_count':'integer','random_factories_growth_fraction':'number','wave_interval_growth_fraction':'number','infinite_growth_fraction':'number','show_bands':'boolean','tiers':{'$list':{'airfields':_campaign_pair,'outposts':_campaign_pair,'airfield_ground':{k:_campaign_pair for k in _campaign_ground_types},'outpost_ground':{k:_campaign_pair for k in _campaign_ground_types},'wave_aircraft':{k:_campaign_pair for k in ('Fighter','Interceptor','Bomber','Suicide Drone')}},'$length':None}})
 
 
-# SEAD emitters provide radar contacts rather than visual detection.
+# CIWS uses radar; Flak keeps the Optical range under its compatible visual key.
 for _group in ('ground_units','enemy_ground_units'):
-    SCHEMA[_group]['Flak']['radar_range_nm']=SCHEMA[_group]['Flak'].pop('visual_range_nm')
+    SCHEMA[_group]['CIWS']['radar_range_nm']=SCHEMA[_group]['CIWS'].pop('visual_range_nm')
 SCHEMA['enemy_ground_units']['SAAW']['radar_range_nm']='number'
 
 SCHEMA['audio']={'enabled':'boolean','master_volume':'fraction','full_volume_zoom_nm':'positive','quiet_zoom_nm':'positive','quiet_volume':'fraction','barely_audible_zoom_nm':'positive','barely_audible_volume':'fraction','max_voices':'integer','events':{key:{'file':'text','volume':'fraction','cooldown_seconds':'number'} for key in AUDIO_DEFAULTS['events']}}
