@@ -1,0 +1,1521 @@
+{
+  "friendly_aircraft": {
+    "RQ-9B": {
+      "health": 40,
+      "speed_knots": 350,
+      "fuel_capacity": 3000,
+      "fuel_burn_units_per_second": 0.5555555555555556,
+      "hardpoints": 0,
+      "bomb_bays": 0,
+      "cms": 2,
+      "price": 2500,
+      "visual_range_nm": 100,
+      "radar_range_nm": 0,
+      "radar_angle_degrees": 0,
+      "afterburner": false,
+      "can_refuel": true
+    },
+    "Fighter": {
+      "health": 100,
+      "speed_knots": 720,
+      "fuel_capacity": 7000,
+      "fuel_burn_units_per_second": 1.1111111111111112,
+      "hardpoints": 4,
+      "bomb_bays": 1,
+      "cms": 6,
+      "price": 1500,
+      "visual_range_nm": 18,
+      "radar_range_nm": 38,
+      "radar_angle_degrees": 65,
+      "afterburner": true,
+      "can_refuel": true
+    },
+    "Bomber": {
+      "health": 150,
+      "speed_knots": 800,
+      "fuel_capacity": 10000,
+      "fuel_burn_units_per_second": 1.3888888888888888,
+      "hardpoints": 2,
+      "bomb_bays": 4,
+      "cms": 10,
+      "price": 3000,
+      "visual_range_nm": 15,
+      "radar_range_nm": 0,
+      "radar_angle_degrees": 0,
+      "afterburner": true,
+      "can_refuel": true
+    },
+    "Interceptor": {
+      "health": 120,
+      "speed_knots": 1000,
+      "fuel_capacity": 9000,
+      "fuel_burn_units_per_second": 2,
+      "hardpoints": 5,
+      "bomb_bays": 0,
+      "cms": 8,
+      "price": 4000,
+      "visual_range_nm": 22,
+      "radar_range_nm": 60,
+      "radar_angle_degrees": 70,
+      "afterburner": true,
+      "can_refuel": true
+    },
+    "AWACS": {
+      "health": 200,
+      "speed_knots": 450,
+      "fuel_capacity": 10000,
+      "fuel_burn_units_per_second": 0.6944444444444444,
+      "hardpoints": 0,
+      "bomb_bays": 0,
+      "cms": 4,
+      "price": 8000,
+      "visual_range_nm": 100,
+      "radar_range_nm": 200,
+      "radar_angle_degrees": 360,
+      "afterburner": false,
+      "can_refuel": false
+    },
+    "KC-49": {
+      "health": 150,
+      "speed_knots": 400,
+      "fuel_capacity": 200000,
+      "fuel_burn_units_per_second": 0.6944444444444444,
+      "hardpoints": 0,
+      "bomb_bays": 0,
+      "cms": 8,
+      "price": 3000,
+      "visual_range_nm": 22,
+      "radar_range_nm": 0,
+      "radar_angle_degrees": 0,
+      "afterburner": false,
+      "can_refuel": false
+    }
+  },
+  "enemy_aircraft": {
+    "Fighter": {
+      "health": 50,
+      "speed_knots": 600,
+      "unlimited_fuel": true,
+      "fuel_burn_units_per_second": 0,
+      "cms": 3,
+      "reload_seconds": 300,
+      "hardpoints": 5,
+      "hardpoint_loadout_counts": {
+        "Sidearm": 1
+      }
+    },
+    "Bomber": {
+      "health": 125,
+      "speed_knots": 800,
+      "unlimited_fuel": true,
+      "fuel_burn_units_per_second": 0,
+      "cms": 4,
+      "reload_seconds": 300
+    },
+    "Suicide Drone": {
+      "health": 25,
+      "speed_knots": 400,
+      "fuel_capacity": 7200,
+      "fuel_burn_units_per_second": 0,
+      "hardpoints": 0,
+      "bomb_bays": 0,
+      "cms": 0,
+      "visual_range_nm": 20,
+      "radar_range_nm": 0,
+      "radar_angle_degrees": 0,
+      "afterburner": false,
+      "can_refuel": false,
+      "unlimited_fuel": true,
+      "reload_seconds": 300
+    },
+    "Interceptor": {
+      "health": 75,
+      "speed_knots": 1000,
+      "unlimited_fuel": true,
+      "fuel_burn_units_per_second": 0,
+      "cms": 4,
+      "reload_seconds": 300
+    }
+  },
+  "speed_modes": {
+    "Eco": {
+      "speed_multiplier": 0.7,
+      "burn_multiplier": 0.5
+    },
+    "Mil": {
+      "speed_multiplier": 1,
+      "burn_multiplier": 1
+    },
+    "AB": {
+      "speed_multiplier": 1.5,
+      "burn_multiplier": 2
+    }
+  },
+  "aircraft_behavior": {
+    "default_orbit_radius_nm": 6,
+    "default_engagement_range_nm": 25,
+    "engagement_range_options_nm": [
+      10,
+      25,
+      50,
+      75,
+      100
+    ],
+    "default_air_weapons_per_target": 1,
+    "default_ground_weapons_per_target": 1,
+    "acceleration_knots_per_second": 30,
+    "deceleration_knots_per_second": 75,
+    "rtb_eco_distance_nm": 5,
+    "rtb_alert_fuel_multiplier": 1.3,
+    "rtb_alert_extra_seconds": 600,
+    "rtb_reserve_extra_seconds": 240,
+    "bomb_turn_slow_distance_nm": 18,
+    "bomb_turn_slow_angle_degrees": 8,
+    "bomb_turn_speed_knots": 300,
+    "normal_bank_degrees": 55,
+    "normal_turn_limit_degrees_per_second": 18,
+    "combat_bank_degrees": 75,
+    "combat_turn_limit_degrees_per_second": 30,
+    "takeoff_target_speed_knots": 250,
+    "liftoff_speed_knots": 180,
+    "takeoff_acceleration_knots_per_second": 35,
+    "rollout_deceleration_knots_per_second": 4,
+    "rtb_pattern_speed_knots": 225,
+    "approach_speed_knots": 180,
+    "final_speed_knots": 160,
+    "touchdown_max_speed_knots": 200,
+    "bomb_turn_deceleration_knots_per_second": 8,
+    "takeoff_straight_distance_nm": 1.25,
+    "defensive_range_nm": 12,
+    "defensive_turn_angle_degrees": 110,
+    "defensive_speed_min_fraction": 0.3,
+    "defensive_speed_max_fraction": 0.7,
+    "fuel_ab_ramp_exponent": 0.5,
+    "command_turn_speed_fraction": 0.55,
+    "command_turn_angle_degrees": 15,
+    "command_turn_deceleration_knots_per_second": 45,
+    "fast_turn_multiplier": 1.15
+  },
+  "ground_units": {
+    "Airfield": {
+      "health": 750,
+      "visual_range_nm": 25,
+      "visual_range_per_upgrade_nm": 10,
+      "runway_length_nm": 1.5,
+      "runway_width_feet": 600,
+      "description": ""
+    },
+    "Radar": {
+      "health": 15,
+      "range_nm": 40,
+      "power": 2,
+      "price": 750,
+      "min_engagement_range_nm": 0,
+      "description": "Provides SAM sites and Aim-120s radar coverage."
+    },
+    "LR Radar": {
+      "health": 25,
+      "range_nm": 82,
+      "power": 4,
+      "price": 1500,
+      "min_engagement_range_nm": 0,
+      "description": "Provides SAM sites and Aim-120s extended radar coverage."
+    },
+    "EWR": {
+      "health": 35,
+      "power": 3,
+      "price": 2500,
+      "configuration_points": 5,
+      "default_range_points": 3,
+      "range_per_point_nm": 75,
+      "width_per_point_degrees": 17.5,
+      "rotation_degrees_per_minute": 60,
+      "min_engagement_range_nm": 0,
+      "description": "Provides SAM sites and Aim-120s directional radar coverage at extreme ranges. Pairs well with the PAC-3.\n\n\n\n"
+    },
+    "SAM": {
+      "health": 20,
+      "range_nm": 32,
+      "ammo": 4,
+      "power": 1,
+      "price": 1500,
+      "shot_interval_seconds": 5,
+      "max_inflight_missiles": 1,
+      "reload_seconds": 300,
+      "min_engagement_range_nm": 4,
+      "description": "Surface to air Missile launcher. Requires Radar coverage to fire and track."
+    },
+    "LR SAM": {
+      "health": 25,
+      "range_nm": 60,
+      "ammo": 4,
+      "power": 2,
+      "price": 100,
+      "shot_interval_seconds": 10,
+      "max_inflight_missiles": 2,
+      "reload_seconds": 300,
+      "min_engagement_range_nm": 6,
+      "description": "Extended range Surface to air Missile launcher. Requires Radar coverage to fire and track."
+    },
+    "CIWS": {
+      "health": 15,
+      "range_nm": 8,
+      "ammo": 500,
+      "power": 1,
+      "price": 1250,
+      "rounds_per_second": 5,
+      "reload_seconds": 200,
+      "min_engagement_range_nm": 0,
+      "description": "Provides Point defence against aircraft, missiles, bombs, and ICBMS. Has a short range radar built in and must be on to work.",
+      "radar_range_nm": 8.2
+    },
+    "Flak": {
+      "health": 20,
+      "range_nm": 15,
+      "ammo": 50,
+      "power": 1,
+      "price": 750,
+      "shells_per_second": 0.5,
+      "reload_seconds": 250,
+      "min_engagement_range_nm": 4,
+      "description": "Provides Point defences without the need for radar coverage against Missiles, Bombs, Aircraft, Drones and ICBMS.",
+      "visual_range_nm": 15
+    },
+    "PAC-3": {
+      "health": 50,
+      "range_nm": 80,
+      "ammo": 3,
+      "power": 4,
+      "price": 5000,
+      "shot_interval_seconds": 5,
+      "max_inflight_missiles": 4,
+      "reload_seconds": 300,
+      "cone_width_degrees": 55,
+      "rotation_degrees_per_second": 5,
+      "min_engagement_range_nm": 10,
+      "description": "An extreme range forward facing surface to air missile."
+    },
+    "Missile Silo": {
+      "health": 150,
+      "price": 5000,
+      "power": 5,
+      "min_engagement_range_nm": 25,
+      "reload_seconds": 900,
+      "countdown_seconds": 5,
+      "description": "Launch precision long range strikes."
+    }
+  },
+  "missiles": {
+    "AIM-120": {
+      "damage": 50,
+      "damage_spread_fraction": 0.12,
+      "launch_range_nm": 38,
+      "max_range_nm": 45,
+      "health": 5,
+      "boost_seconds": 2,
+      "speed_knots": 2800,
+      "coast_deceleration_knots_per_second": 33,
+      "hardpoint_count": 2,
+      "pitbull_range_nm": 6
+    },
+    "AIM-9": {
+      "damage": 45,
+      "damage_spread_fraction": 0.45,
+      "launch_range_nm": 12,
+      "max_range_nm": 16,
+      "health": 5,
+      "boost_seconds": 3.5,
+      "speed_knots": 2000,
+      "coast_deceleration_knots_per_second": 40,
+      "hardpoint_count": 3
+    },
+    "SM1": {
+      "damage": 65,
+      "damage_spread_fraction": 0.3,
+      "launch_range_nm": 8,
+      "max_range_nm": 8,
+      "health": 5,
+      "boost_seconds": 2,
+      "speed_knots": 2500,
+      "coast_deceleration_knots_per_second": 8
+    },
+    "AGM-88": {
+      "damage": 75,
+      "damage_spread_fraction": 0.05,
+      "launch_range_nm": 60,
+      "max_range_nm": 80,
+      "health": 20,
+      "boost_seconds": 9,
+      "speed_knots": 3500,
+      "coast_deceleration_knots_per_second": 35,
+      "hardpoint_count": 1
+    },
+    "Sidearm": {
+      "damage": 35,
+      "damage_spread_fraction": 0.1,
+      "launch_range_nm": 30,
+      "max_range_nm": 50,
+      "health": 12,
+      "boost_seconds": 9,
+      "speed_knots": 2850,
+      "coast_deceleration_knots_per_second": 22,
+      "hardpoint_count": 2
+    },
+    "PAC-3 MSE": {
+      "damage": 200,
+      "damage_spread_fraction": 0.25,
+      "launch_range_nm": 200,
+      "max_range_nm": 225,
+      "health": 25,
+      "boost_seconds": 8,
+      "speed_knots": 6500,
+      "coast_deceleration_knots_per_second": 30,
+      "turn_limit_degrees_per_second": 1,
+      "launch_speed_knots": 650,
+      "min_turn_speed_fraction": 0.2
+    },
+    "MIM-23": {
+      "damage": 100,
+      "damage_spread_fraction": 0.2,
+      "launch_range_nm": 32,
+      "max_range_nm": 32,
+      "health": 5,
+      "boost_seconds": 2,
+      "speed_knots": 3100,
+      "coast_deceleration_knots_per_second": 35
+    },
+    "MIM-104": {
+      "damage": 150,
+      "damage_spread_fraction": 0.2,
+      "launch_range_nm": 60,
+      "max_range_nm": 60,
+      "health": 5,
+      "boost_seconds": 2,
+      "speed_knots": 3900,
+      "coast_deceleration_knots_per_second": 35
+    }
+  },
+  "missile_behavior": {
+    "salvo_interval_seconds": 3,
+    "hit_radius_nm": 0.035,
+    "turn_limit_degrees_per_second": 70,
+    "turn_g_limit": 25,
+    "turn_drag_knots_per_degree": 1.2,
+    "lost_lock_seconds": 1.5,
+    "self_destruct_seconds": 1.5,
+    "min_coast_speed_knots": 100,
+    "aim9_close_turn_range_nm": 3,
+    "aim9_close_turn_multiplier": 1.3,
+    "anti_radar_range_based_drag": true,
+    "anti_radar_shutdown_scatter_nm_per_nm": 0.12
+  },
+  "bombs": {
+    "250": {
+      "damage": 20,
+      "damage_spread_fraction": 0.15,
+      "health": 20,
+      "bay_count": 3
+    },
+    "500": {
+      "damage": 50,
+      "damage_spread_fraction": 0.1,
+      "health": 50,
+      "bay_count": 2
+    },
+    "1000": {
+      "damage": 150,
+      "damage_spread_fraction": 0.08,
+      "health": 90,
+      "bay_count": 2
+    },
+    "2000": {
+      "damage": 500,
+      "damage_spread_fraction": 0.2,
+      "health": 125,
+      "bay_count": 1
+    }
+  },
+  "bomb_behavior": {
+    "drag_per_second": 0.005,
+    "drop_range_nm": 2.4,
+    "hit_radius_nm": 0.18,
+    "alignment_degrees": 3
+  },
+  "guns": {
+    "bullet_speed_knots": 3000,
+    "dispersion_degrees": 2.5,
+    "damage_min": 3,
+    "damage_max": 5,
+    "hit_radius_nm": 0.025
+  },
+  "flak": {
+    "shell_speed_knots": 2200,
+    "dispersion_degrees": 6,
+    "fragment_count_min": 15,
+    "fragment_count_max": 18,
+    "fragment_speed_knots": 1200,
+    "fragment_range_nm": 0.5,
+    "fragment_damage_min": 2,
+    "fragment_damage_max": 3,
+    "fragment_hit_radius_nm": 0.025
+  },
+  "drone_impact": {
+    "damage": 35,
+    "damage_spread_fraction": 0.75
+  },
+  "countermeasures": {
+    "success_probability": 0.5,
+    "burst_cooldown_seconds": 6,
+    "burst_flare_count": 8,
+    "burst_duration_seconds": 1.2,
+    "lead_seconds_min": 3.5,
+    "lead_seconds_max": 6
+  },
+  "tanker": {
+    "refuel_radius_nm": 0.8,
+    "transfer_units_per_second": 120
+  },
+  "ground_crew": {
+    "repair_seconds_per_hp": [
+      0.2,
+      0.5,
+      0.75,
+      1,
+      2
+    ],
+    "rearm_seconds_per_weapon": [
+      10,
+      8.75,
+      7.5,
+      6.25,
+      5
+    ],
+    "crews_by_level": [
+      1,
+      2,
+      2,
+      3,
+      3
+    ],
+    "refuel_units_per_second_level1": 250,
+    "refuel_increase_fraction_per_level": 0.15
+  },
+  "logistics": {
+    "speed_knots": 175,
+    "helicopters_by_level": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "heal_per_delivery": 50,
+    "reload_speed_multipliers_by_level": [
+      1,
+      1.5,
+      2.5,
+      3.5,
+      5
+    ]
+  },
+  "economy": {
+    "starting_money": 10000,
+    "sell_refund_fraction": 0.25,
+    "kill_rewards": {
+      "Factory": 2500,
+      "Bunker": 5000,
+      "Fighter": 750,
+      "Interceptor": 1250,
+      "Bomber": 1000,
+      "Radar": 500,
+      "LR Radar": 1500,
+      "SAM": 500,
+      "LR SAM": 1500,
+      "SAAW": 750,
+      "Flak": 500,
+      "CIWS": 1200,
+      "ICBM Silo": 10000,
+      "ICBM": 2500,
+      "Suicide Drone": 250,
+      "Airfield": 50000
+    }
+  },
+  "upgrades": {
+    "power_capacity_by_level": [
+      5,
+      7,
+      10,
+      14,
+      20
+    ],
+    "hangars_by_level": [
+      2,
+      4,
+      6,
+      8,
+      10
+    ],
+    "factory_income_per_minute_by_level": [
+      10,
+      25,
+      100,
+      250,
+      500
+    ],
+    "prices": {
+      "Power": [
+        2000,
+        6000,
+        15000,
+        35000
+      ],
+      "Hangars": [
+        3000,
+        12000,
+        25000,
+        50000
+      ],
+      "Factory": [
+        3000,
+        15000,
+        30000,
+        75000
+      ],
+      "Logistics": [
+        2000,
+        10000,
+        25000,
+        50000
+      ],
+      "Ground Crew": [
+        3000,
+        10000,
+        35000,
+        65000
+      ],
+      "Airfield": [
+        5000,
+        25000,
+        50000,
+        75000
+      ]
+    },
+    "airfield_unlocks": {
+      "1": [
+        "Fighter",
+        "Radar",
+        "AIM-9",
+        "250 lb bomb",
+        "Sidearm",
+        "Flak"
+      ],
+      "2": [
+        "SAM",
+        "Bomber",
+        "RQ-9B",
+        "AIM-120"
+      ],
+      "3": [
+        "CIWS",
+        "500 lb bomb",
+        "KC-49",
+        "AGM-88",
+        "Interceptor",
+        "LR Radar"
+      ],
+      "4": [
+        "AWACS",
+        "1000 lb bomb",
+        "EWR",
+        "LR SAM"
+      ],
+      "5": [
+        "PAC-3",
+        "2000 lb bomb",
+        "Missile Silo"
+      ]
+    }
+  },
+  "default_loadouts": {
+    "Fighter": {
+      "hardpoints": [
+        "2× AIM-120C",
+        "2× AIM-120C",
+        "3× AIM-9",
+        "2× Sidearm"
+      ],
+      "bays": [
+        "3× 250 lb Bomb"
+      ]
+    },
+    "Interceptor": {
+      "hardpoints": [
+        "2× AIM-120C",
+        "2× AIM-120C",
+        "3× AIM-9",
+        "3× AIM-9"
+      ],
+      "bays": []
+    },
+    "Bomber": {
+      "hardpoints": [
+        "3× AIM-9",
+        "3× AIM-9"
+      ],
+      "bays": [
+        "2× 500 lb Bomb",
+        "2× 500 lb Bomb",
+        "2× 1,000 lb Bomb",
+        "1× 2,000 lb Bomb"
+      ]
+    }
+  },
+  "world": {
+    "build_radius_nm": 20,
+    "radius_nm": 10000,
+    "rwr_range_nm": 500,
+    "rwr_update_seconds": 20,
+    "rwr_range_error_fraction": 0.25,
+    "rwr_bearing_error_degrees": 10,
+    "rwr_baseline_nm": 50,
+    "scope_refresh_seconds": 1.5,
+    "aircraft_wreck_lifetime_seconds": 60,
+    "coverage_refresh_seconds": 1
+  },
+  "enemy_default_loadouts": {
+    "Fighter": {
+      "hardpoints": [
+        "2× AIM-120C",
+        "2× AIM-120C",
+        "3× AIM-9",
+        "Empty",
+        "1× Sidearm"
+      ],
+      "bays": []
+    },
+    "Bomber": {
+      "hardpoints": [
+        "3× AIM-9",
+        "3× AIM-9"
+      ],
+      "bays": [
+        "3× 250 lb Bomb",
+        "3× 250 lb Bomb",
+        "2× 500 lb Bomb",
+        "2× 1,000 lb Bomb"
+      ]
+    }
+  },
+  "icbm": {
+    "health": 175,
+    "launch_speed_knots": 300,
+    "speed_knots": 1750,
+    "acceleration_knots_per_second": 200,
+    "damage": 175,
+    "damage_spread_fraction": 0.5,
+    "hit_radius_nm": 0.035
+  },
+  "enemy_ground_units": {
+    "Radar": {
+      "health": 15,
+      "range_nm": 40,
+      "min_engagement_range_nm": 0,
+      "description": ""
+    },
+    "LR Radar": {
+      "health": 25,
+      "range_nm": 60,
+      "min_engagement_range_nm": 0,
+      "description": ""
+    },
+    "SAM": {
+      "health": 20,
+      "range_nm": 32,
+      "ammo": 4,
+      "shot_interval_seconds": 0,
+      "max_inflight_missiles": 1,
+      "reload_seconds": 800,
+      "min_engagement_range_nm": 4,
+      "description": ""
+    },
+    "LR SAM": {
+      "health": 25,
+      "range_nm": 60,
+      "ammo": 4,
+      "shot_interval_seconds": 0,
+      "max_inflight_missiles": 1,
+      "reload_seconds": 1200,
+      "min_engagement_range_nm": 6,
+      "description": ""
+    },
+    "SAAW": {
+      "health": 20,
+      "range_nm": 8,
+      "ammo": 4,
+      "gun_range_nm": 1.5,
+      "gun_ammo": 200,
+      "gun_rounds_per_second": 4,
+      "shot_interval_seconds": 3.5,
+      "max_inflight_missiles": 2,
+      "reload_seconds": 350,
+      "min_engagement_range_nm": 2,
+      "radar_range_nm": 9,
+      "description": ""
+    },
+    "CIWS": {
+      "health": 15,
+      "range_nm": 4,
+      "ammo": 300,
+      "rounds_per_second": 8,
+      "reload_seconds": 400,
+      "min_engagement_range_nm": 0,
+      "description": "",
+      "radar_range_nm": 8
+    },
+    "Flak": {
+      "health": 20,
+      "range_nm": 15,
+      "ammo": 50,
+      "shells_per_second": 0.5,
+      "reload_seconds": 1200,
+      "min_engagement_range_nm": 1.5,
+      "description": "",
+      "visual_range_nm": 24
+    },
+    "Factory": {
+      "health": 15,
+      "description": ""
+    },
+    "Bunker": {
+      "health": 50,
+      "description": ""
+    },
+    "ICBM Silo": {
+      "health": 150,
+      "reload_seconds": 1000,
+      "launch_enabled": true,
+      "min_engagement_range_nm": 0,
+      "description": ""
+    },
+    "Drone Launcher": {
+      "health": 20,
+      "ammo": 3,
+      "shot_interval_seconds": 3,
+      "reload_seconds": 3000,
+      "launch_enabled": true,
+      "min_engagement_range_nm": 0,
+      "description": ""
+    }
+  },
+  "campaign": {
+    "safe_radius_nm": 50,
+    "band_width_nm": 50,
+    "aircraft_clearance_nm": 50,
+    "unit_separation_nm": 1,
+    "base_separation_nm": 8,
+    "garrison_radius_nm": 6,
+    "placement_attempts": 200,
+    "runway_health": 300,
+    "first_wave_delay_seconds": 1000,
+    "wave_interval_seconds": 600,
+    "wave_interval_growth_fraction": 0.5,
+    "infinite_growth_fraction": 0.35,
+    "show_bands": false,
+    "tiers": [
+      {
+        "airfields": [
+          1,
+          1
+        ],
+        "outposts": [
+          1,
+          2
+        ],
+        "airfield_ground": {
+          "Factory": [
+            0,
+            2
+          ],
+          "Bunker": [
+            0,
+            0
+          ],
+          "Radar": [
+            1,
+            1
+          ],
+          "LR Radar": [
+            0,
+            0
+          ],
+          "SAM": [
+            0,
+            0
+          ],
+          "LR SAM": [
+            0,
+            0
+          ],
+          "Flak": [
+            1,
+            1
+          ],
+          "SAAW": [
+            0,
+            0
+          ],
+          "CIWS": [
+            0,
+            0
+          ],
+          "Drone Launcher": [
+            0,
+            0
+          ],
+          "ICBM Silo": [
+            0,
+            0
+          ]
+        },
+        "outpost_ground": {
+          "Factory": [
+            1,
+            5
+          ],
+          "Bunker": [
+            0,
+            1
+          ],
+          "Radar": [
+            0,
+            0
+          ],
+          "LR Radar": [
+            0,
+            0
+          ],
+          "SAM": [
+            0,
+            0
+          ],
+          "LR SAM": [
+            0,
+            0
+          ],
+          "Flak": [
+            0,
+            1
+          ],
+          "SAAW": [
+            0,
+            1
+          ],
+          "CIWS": [
+            0,
+            0
+          ],
+          "Drone Launcher": [
+            0,
+            0
+          ],
+          "ICBM Silo": [
+            0,
+            0
+          ]
+        },
+        "wave_aircraft": {
+          "Fighter": [
+            0,
+            0
+          ],
+          "Interceptor": [
+            0,
+            0
+          ],
+          "Bomber": [
+            0,
+            0
+          ],
+          "Suicide Drone": [
+            1,
+            5
+          ]
+        }
+      },
+      {
+        "airfields": [
+          1,
+          1
+        ],
+        "outposts": [
+          2,
+          3
+        ],
+        "airfield_ground": {
+          "Factory": [
+            1,
+            2
+          ],
+          "Bunker": [
+            0,
+            1
+          ],
+          "Radar": [
+            1,
+            1
+          ],
+          "LR Radar": [
+            0,
+            0
+          ],
+          "SAM": [
+            1,
+            1
+          ],
+          "LR SAM": [
+            0,
+            0
+          ],
+          "Flak": [
+            2,
+            3
+          ],
+          "SAAW": [
+            0,
+            2
+          ],
+          "CIWS": [
+            1,
+            1
+          ],
+          "Drone Launcher": [
+            0,
+            1
+          ],
+          "ICBM Silo": [
+            0,
+            0
+          ]
+        },
+        "outpost_ground": {
+          "Factory": [
+            1,
+            5
+          ],
+          "Bunker": [
+            0,
+            2
+          ],
+          "Radar": [
+            0,
+            0
+          ],
+          "LR Radar": [
+            0,
+            0
+          ],
+          "SAM": [
+            0,
+            0
+          ],
+          "LR SAM": [
+            0,
+            0
+          ],
+          "Flak": [
+            1,
+            1
+          ],
+          "SAAW": [
+            1,
+            2
+          ],
+          "CIWS": [
+            0,
+            1
+          ],
+          "Drone Launcher": [
+            0,
+            1
+          ],
+          "ICBM Silo": [
+            0,
+            0
+          ]
+        },
+        "wave_aircraft": {
+          "Fighter": [
+            1,
+            2
+          ],
+          "Interceptor": [
+            0,
+            0
+          ],
+          "Bomber": [
+            0,
+            1
+          ],
+          "Suicide Drone": [
+            5,
+            10
+          ]
+        }
+      },
+      {
+        "airfields": [
+          1,
+          1
+        ],
+        "outposts": [
+          2,
+          3
+        ],
+        "airfield_ground": {
+          "Factory": [
+            2,
+            3
+          ],
+          "Bunker": [
+            1,
+            2
+          ],
+          "Radar": [
+            1,
+            1
+          ],
+          "LR Radar": [
+            0,
+            1
+          ],
+          "SAM": [
+            1,
+            3
+          ],
+          "LR SAM": [
+            1,
+            2
+          ],
+          "Flak": [
+            1,
+            3
+          ],
+          "SAAW": [
+            0,
+            2
+          ],
+          "CIWS": [
+            1,
+            2
+          ],
+          "Drone Launcher": [
+            0,
+            1
+          ],
+          "ICBM Silo": [
+            0,
+            1
+          ]
+        },
+        "outpost_ground": {
+          "Factory": [
+            1,
+            3
+          ],
+          "Bunker": [
+            0,
+            2
+          ],
+          "Radar": [
+            0,
+            1
+          ],
+          "LR Radar": [
+            0,
+            1
+          ],
+          "SAM": [
+            0,
+            1
+          ],
+          "LR SAM": [
+            0,
+            1
+          ],
+          "Flak": [
+            1,
+            2
+          ],
+          "SAAW": [
+            1,
+            3
+          ],
+          "CIWS": [
+            0,
+            2
+          ],
+          "Drone Launcher": [
+            0,
+            1
+          ],
+          "ICBM Silo": [
+            0,
+            0
+          ]
+        },
+        "wave_aircraft": {
+          "Fighter": [
+            2,
+            3
+          ],
+          "Interceptor": [
+            0,
+            2
+          ],
+          "Bomber": [
+            0,
+            2
+          ],
+          "Suicide Drone": [
+            3,
+            5
+          ]
+        }
+      },
+      {
+        "airfields": [
+          2,
+          2
+        ],
+        "outposts": [
+          3,
+          5
+        ],
+        "airfield_ground": {
+          "Factory": [
+            3,
+            5
+          ],
+          "Bunker": [
+            2,
+            4
+          ],
+          "Radar": [
+            1,
+            3
+          ],
+          "LR Radar": [
+            1,
+            2
+          ],
+          "SAM": [
+            2,
+            4
+          ],
+          "LR SAM": [
+            1,
+            3
+          ],
+          "Flak": [
+            1,
+            4
+          ],
+          "SAAW": [
+            0,
+            3
+          ],
+          "CIWS": [
+            1,
+            3
+          ],
+          "Drone Launcher": [
+            1,
+            3
+          ],
+          "ICBM Silo": [
+            1,
+            2
+          ]
+        },
+        "outpost_ground": {
+          "Factory": [
+            1,
+            3
+          ],
+          "Bunker": [
+            0,
+            3
+          ],
+          "Radar": [
+            1,
+            2
+          ],
+          "LR Radar": [
+            0,
+            1
+          ],
+          "SAM": [
+            1,
+            3
+          ],
+          "LR SAM": [
+            0,
+            2
+          ],
+          "Flak": [
+            1,
+            3
+          ],
+          "SAAW": [
+            1,
+            3
+          ],
+          "CIWS": [
+            0,
+            2
+          ],
+          "Drone Launcher": [
+            0,
+            1
+          ],
+          "ICBM Silo": [
+            0,
+            1
+          ]
+        },
+        "wave_aircraft": {
+          "Fighter": [
+            2,
+            5
+          ],
+          "Interceptor": [
+            2,
+            3
+          ],
+          "Bomber": [
+            1,
+            3
+          ],
+          "Suicide Drone": [
+            2,
+            3
+          ]
+        }
+      }
+    ],
+    "random_seed": 0,
+    "random_factories_start_count": 12,
+    "random_factories_growth_fraction": 0.25,
+    "core_factory_min_radius_nm": 3,
+    "runway_length_nm": 2,
+    "runway_width_nm": 0.15,
+    "runway_health_per_band": 200,
+    "runway_description": ""
+  },
+  "audio": {
+    "enabled": true,
+    "master_volume": 1,
+    "full_volume_zoom_nm": 10,
+    "quiet_zoom_nm": 75,
+    "quiet_volume": 0.1,
+    "barely_audible_zoom_nm": 100,
+    "barely_audible_volume": 0.02,
+    "max_voices": 16,
+    "events": {
+      "ciws_fire": {
+        "file": "game_ciws_fire",
+        "volume": 0.6,
+        "cooldown_seconds": 0.08
+      },
+      "flak_fire": {
+        "file": "game_flak_fire",
+        "volume": 0.85,
+        "cooldown_seconds": 0.06
+      },
+      "flak_burst": {
+        "file": "game_flak_burst",
+        "volume": 0.65,
+        "cooldown_seconds": 0.04
+      },
+      "aircraft_missile": {
+        "file": "game_aircraft_missile",
+        "volume": 0.75,
+        "cooldown_seconds": 0.05
+      },
+      "missile_explosion": {
+        "file": "game_missile_explosion",
+        "volume": 0.8,
+        "cooldown_seconds": 0.05
+      },
+      "icbm_launch": {
+        "file": "game_icbm_launch",
+        "volume": 0.9,
+        "cooldown_seconds": 0.3
+      },
+      "bomb_250": {
+        "file": "game_bomb_250",
+        "volume": 0.55,
+        "cooldown_seconds": 0.06
+      },
+      "bomb_500": {
+        "file": "game_bomb_500",
+        "volume": 0.7,
+        "cooldown_seconds": 0.06
+      },
+      "bomb_1000": {
+        "file": "game_bomb_1000",
+        "volume": 0.85,
+        "cooldown_seconds": 0.06
+      },
+      "bomb_2000": {
+        "file": "game_bomb_2000",
+        "volume": 1,
+        "cooldown_seconds": 0.06
+      },
+      "buy_aircraft": {
+        "file": "game_buy_aircraft",
+        "volume": 0.75,
+        "cooldown_seconds": 0
+      },
+      "place_unit": {
+        "file": "game_place_unit",
+        "volume": 0.7,
+        "cooldown_seconds": 0
+      },
+      "upgrade": {
+        "file": "game_upgrade",
+        "volume": 0.85,
+        "cooldown_seconds": 0
+      },
+      "drone_impact": {
+        "file": "game_drone_impact",
+        "volume": 0.8,
+        "cooldown_seconds": 0.06
+      },
+      "radar_ping": {
+        "file": "game_radar_ping",
+        "volume": 1,
+        "cooldown_seconds": 0.06
+      },
+      "silo_conventional_impact": {
+        "file": "game_silo_conventional_impact",
+        "volume": 0.9,
+        "cooldown_seconds": 0.06
+      },
+      "silo_cluster_impact": {
+        "file": "game_silo_cluster_impact",
+        "volume": 0.65,
+        "cooldown_seconds": 0.04
+      },
+      "silo_nuclear_impact": {
+        "file": "game_silo_nuclear_impact",
+        "volume": 1,
+        "cooldown_seconds": 0.5
+      },
+      "objective_complete": {
+        "file": "game_objective_complete",
+        "volume": 0.8,
+        "cooldown_seconds": 0
+      },
+      "achievement_unlocked": {
+        "file": "game_achievement_unlocked",
+        "volume": 0.8,
+        "cooldown_seconds": 0
+      },
+      "kill_reward": {
+        "file": "game_kill_reward",
+        "volume": 0.8,
+        "cooldown_seconds": 0
+      }
+    },
+    "center_falloff_enabled": true,
+    "edge_volume": 0.25,
+    "silence_distance_frames": 1.5,
+    "center_falloff_exponent": 1.5,
+    "kill_reward_scaling": {
+      "min_reward": 0,
+      "max_reward": 5000,
+      "min_volume_multiplier": 0.2,
+      "max_volume_multiplier": 1
+    }
+  },
+  "player_warheads": {
+    "Conventional": {
+      "price": 5000,
+      "blast_radius_nm": 1.75,
+      "center_damage": 500,
+      "edge_damage": 5
+    },
+    "Cluster": {
+      "price": 12000,
+      "coverage_radius_nm": 7,
+      "burst_distance_nm": 18,
+      "count": 8,
+      "max_per_target": 3,
+      "damage": 75,
+      "damage_spread_fraction": 0.4,
+      "submunition_health": 15,
+      "impact_radius_nm": 0.28
+    },
+    "Nuclear": {
+      "price": 50000,
+      "blast_radius_nm": 15,
+      "center_damage": 1000,
+      "edge_damage": 1
+    }
+  },
+  "player_strike_missile": {
+    "health": 200,
+    "launch_speed_knots": 400,
+    "speed_knots": 2500,
+    "acceleration_knots_per_second": 225,
+    "hit_radius_nm": 0.035
+  },
+  "objectives": [
+    {
+      "id": "build_flak",
+      "title": "Use the build menu to place a Flak Cannon within the build area. (20NM)",
+      "type": "build",
+      "target": "Flak",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 1000
+    },
+    {
+      "id": "buy_fighter",
+      "title": "Buy a fighter from the Hangar menu.",
+      "type": "build",
+      "target": "Fighter",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 2000
+    },
+    {
+      "id": "bomb_factories",
+      "title": "Destroy 3 Factories using bombs.",
+      "type": "kill",
+      "target": "Factory",
+      "amount": 3,
+      "weapon": "Bombs",
+      "reward": 3000
+    },
+    {
+      "id": "enemy_airfield",
+      "title": "Locate the enemy airfield. Its somewhere within 100 NM of your Airfield.",
+      "type": "locate",
+      "target": "Airfield",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 4000
+    },
+    {
+      "id": "objective_5",
+      "title": "Destroy the enemy Airfield by bombing its runway.",
+      "type": "kill",
+      "target": "Airfield",
+      "amount": 1,
+      "weapon": "Any",
+      "reward": 5000
+    }
+  ]
+}

@@ -16,21 +16,21 @@ bash build_linux.sh
 ./dist/Wire_Judge
 ```
 
-The first build needs internet access. Build Linux releases on Linux for the intended CPU architecture; test on the distributions you support. Distribute `dist/Wire_Judge` with `dist/game_stats.json`. If needed, run `chmod +x Wire_Judge` after extracting. Sound uses `paplay` or `aplay`.
+The first build needs internet access. Build Linux releases on Linux for the intended CPU architecture; test on the distributions you support. Distribute `dist/Wire_Judge`; game settings and sounds are bundled in the executable. If needed, run `chmod +x Wire_Judge` after extracting. Sound uses `paplay` or `aplay`.
 
 **Run from source:** Use Python 3.11+ with Tkinter. Open a terminal in the project folder:
 
 Windows:
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r config/requirements.txt
 .\.venv\Scripts\python.exe app.py
 ```
 
 Mac/Linux:
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r config/requirements.txt
 .venv/bin/python app.py
 ```
 
@@ -56,3 +56,24 @@ Shift-click attempts to compare up to four. Click graphs with Pan/Zoom off to in
 ## Airfield Defense
 
 Build defenses, buy aircraft in Hangar, and destroy enemy airfields while protecting yours. Upgrade the airfield to unlock more units and weapons. 
+
+Game modules, `game_stats.json`, reference notes, the settings editor, and game sounds live in `game/`. Run the app from the project root as before. To edit game settings on Windows, open `game/Game_Settings_Editor.bat`; on Mac/Linux, run `python3 -m game.game_config_editor` from the project root.
+
+Packaged builds can optionally override the bundled settings with `game/game_stats.json` beside the executable. The legacy `game_stats.json` beside the executable is also supported.
+
+Replay Map starts with **Only Landing** off. Opening an attempt leaves that toggle at your chosen setting.
+
+## Project folders
+
+| Folder | Contents |
+| --- | --- |
+| `core/` | Replay reading, approach analysis, scoring, saved edits, and shared audio. |
+| `ui/` | Application views, plots, timeline editor, export, and animations. |
+| `replay/` | Replay Map, playback rendering, aircraft inspector, and carrier drawing. |
+| `game/` | Airfield Defense code, settings, settings editor, notes, and game sounds. |
+| `assets/` | Shared icons, logos, carrier stencil, and application sounds. |
+| `config/` | Python dependency requirements. |
+| `data/replays/` | Included example replay. |
+| `docs/images/` | Documentation screenshots. |
+
+Start with `app.py` or the build scripts in the project root.

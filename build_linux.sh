@@ -19,7 +19,7 @@ if ! "$python_command" -c 'import tkinter' >/dev/null 2>&1; then
     printf 'Tkinter is missing. On Ubuntu/Mint: sudo apt install python3-tk\n' >&2
     exit 1
 fi
-for required in app.py requirements.txt game_stats.json assets; do
+for required in app.py config/requirements.txt game/game_stats.json game/assets assets; do
     if [[ ! -e "$required" ]]; then
         printf 'Missing %s. Keep this script in the full Wire Judge project folder.\n' "$required" >&2
         exit 1
@@ -29,18 +29,14 @@ done
 printf 'Building Wire Judge for Linux...\n'
 "$python_command" -m venv .build-venv-linux
 build_python='.build-venv-linux/bin/python'
-"$build_python" -m pip install -r requirements.txt 'pyinstaller>=6,<7'
+"$build_python" -m pip install -r config/requirements.txt 'pyinstaller>=6,<7'
 "$build_python" -m PyInstaller \
     --noconfirm --clean --onefile --name Wire_Judge \
     --workpath build/linux --specpath build/linux \
     --add-data "$PWD/assets:assets" \
-    --add-data "$PWD/game_stats.json:." \
+    --add-data "$PWD/game/game_stats.json:game" \
+    --add-data "$PWD/game/assets:game/assets" \
     "$PWD/app.py"
 
-if [[ ! -f dist/game_stats.json ]]; then
-    cp -- game_stats.json dist/game_stats.json
-else
-    printf 'Keeping your existing dist/game_stats.json settings.\n'
-fi
 chmod +x dist/Wire_Judge
-printf '\nDone! Run: ./dist/Wire_Judge\nEditable game settings: dist/game_stats.json\n'
+printf '\nDone! Run: ./dist/Wire_Judge\n'

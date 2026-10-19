@@ -4,13 +4,13 @@ cd /d "%~dp0"
 
 echo Building portable Wire Judge for Windows...
 
-if not exist "game_stats.json" (
-  echo Missing game_stats.json. Put it beside this build script before building.
+if not exist "game\game_stats.json" (
+  echo Missing game\game_stats.json. Keep the game folder beside this build script.
   goto failed
 )
 
-if not exist "requirements.txt" (
-  echo Missing requirements.txt.
+if not exist "config\requirements.txt" (
+  echo Missing config\requirements.txt.
   goto failed
 )
 
@@ -65,7 +65,7 @@ echo Using %PYTHON_CMD%
 if errorlevel 1 goto failed
 
 ".build-venv\Scripts\python.exe" -m pip install ^
-  -r requirements.txt "pyinstaller>=6,<7"
+  -r config\requirements.txt "pyinstaller>=6,<7"
 if errorlevel 1 goto failed
 
 ".build-venv\Scripts\python.exe" -m PyInstaller ^
@@ -73,7 +73,8 @@ if errorlevel 1 goto failed
   --name Wire_Judge ^
   --icon "assets\app_icon.ico" ^
   --add-data "assets:assets" ^
-  --add-data "game_stats.json:." ^
+  --add-data "game\game_stats.json:game" ^
+  --add-data "game\assets:game/assets" ^
   app.py
 if errorlevel 1 goto failed
 

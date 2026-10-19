@@ -1,29 +1,29 @@
-"""Wire Judge v1.3 — local native-VTR approach viewer."""
+"""Wire Judge v2.0 — local native-VTR approach viewer."""
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import asdict
 import json, os, queue, re, threading, tkinter as tk
 from tkinter import ttk, filedialog, messagebox, font as tkfont
 from PIL import Image,ImageDraw,ImageTk
-from toolbar import GraphToolbar,DeferredFigureCanvasTkAgg
-from reader import read_motion
-from engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,black_box_data,BLACK_BOX_METRICS
-from plots import make_figure,draw,BG,PANEL,TEXT,MUTED,GREEN,START_END_COLOR,ATTEMPT_COLORS,MAX_COMPARE_ATTEMPTS,ApproachCursor
-from annotations import Annotations,WIRE_OPTIONS,replay_digest
-from attempt_edits import AttemptEdits
-from app_animations import ApplicationAnimations
-from sound_effects import SoundEffects
-from editor import AttemptEditorPage
-from scoring import score_attempt,best_by_player,is_best,maximum,approach_maximum
-from score_window import ScoreWindow
-from replay_map import ReplayMapPage
-from game_map import GameMapPage
+from ui.toolbar import GraphToolbar,DeferredFigureCanvasTkAgg
+from core.reader import read_motion
+from core.engine import Settings,auto_bolter,analyze,last_attempts,player_label,clock,glide_origin_msl_ft,glide_start_nm,black_box_data,BLACK_BOX_METRICS
+from ui.plots import make_figure,draw,BG,PANEL,TEXT,MUTED,GREEN,START_END_COLOR,ATTEMPT_COLORS,MAX_COMPARE_ATTEMPTS,ApproachCursor
+from core.annotations import Annotations,WIRE_OPTIONS,replay_digest
+from core.attempt_edits import AttemptEdits
+from ui.app_animations import ApplicationAnimations
+from core.sound_effects import SoundEffects
+from ui.editor import AttemptEditorPage
+from core.scoring import score_attempt,best_by_player,is_best,maximum,approach_maximum
+from ui.score_window import ScoreWindow
+from replay.replay_map import ReplayMapPage
+from game.game_map import GameMapPage
 
 SETTINGS_PATH=Path.home()/'.wire_judge'/'settings.json'
 ANNOTATIONS_DIR=Path.home()/'.wire_judge'/'annotations'
 AGREEMENT_PATH=Path.home()/'.wire_judge'/'agreement.json'
 ASSETS_DIR=Path(__file__).resolve().parent/'assets'
-APP_VERSION='1.5'
+APP_VERSION='2.0'
 STARTUP_TERMS=(
     'All scores and calculations are subject to change. By clicking “I Agree,” you acknowledge that STRAYDOG and any applications created by STRAYDOG are not responsible for emotional distress, bruised egos, damaged flight controls, or heated Discord arguments resulting from your questionable approach.',
     'Software bugs and calculation errors may occur. However, their existence does not automatically explain your bolter.',
